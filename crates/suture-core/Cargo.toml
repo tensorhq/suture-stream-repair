@@ -1,0 +1,9 @@
+[package]
+name = "suture-core"
+version = "0.1.0"
+edition = "2021"
+description = "Byte-level JSON stream repair engine for Suture."
+license = "MIT OR Apache-2.0"
+
+[dev-dependencies]
+serde_json = "1"
