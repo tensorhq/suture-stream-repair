@@ -1,2 +1,4 @@
 docs/superpowers/
 DESIGN.md
+/target
+Cargo.lock
