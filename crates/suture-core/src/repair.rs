@@ -34,6 +34,8 @@ enum Pos {
 enum Lex {
     Between,
     Str,
+    StrEsc,
+    StrU(u8),
     Scalar,
 }
 
@@ -73,6 +75,10 @@ impl Default for StreamRepairer {
 
 fn is_ws(b: u8) -> bool {
     matches!(b, b' ' | b'\t' | b'\n' | b'\r')
+}
+
+fn is_hex(b: u8) -> bool {
+    b.is_ascii_hexdigit()
 }
 
 fn is_scalar_start(b: u8) -> bool {
@@ -142,13 +148,23 @@ impl StreamRepairer {
         }
         match self.lex {
             Lex::Str => match b {
-                b'\\' => { /* escapes handled in a later task; normal byte for now */ }
+                b'\\' => self.lex = Lex::StrEsc,
                 b'"' => {
                     self.lex = Lex::Between;
                     self.complete_string();
                 }
                 _ => {}
             },
+            Lex::StrEsc => {
+                self.lex = if b == b'u' { Lex::StrU(0) } else { Lex::Str };
+            }
+            Lex::StrU(n) => {
+                if is_hex(b) {
+                    self.lex = if n == 3 { Lex::Str } else { Lex::StrU(n + 1) };
+                } else {
+                    self.consistent = false;
+                }
+            }
             Lex::Scalar => {
                 if is_scalar_byte(b) {
                     self.scalar_len += 1;
@@ -318,6 +334,22 @@ impl StreamRepairer {
                     append.push(b'"');
                 }
             }
+            Lex::StrEsc => {
+                if self.str_is_key {
+                    drop_trailing = self.len - self.cur_drop_to();
+                } else {
+                    drop_trailing = 1; // drop the dangling '\'
+                    append.push(b'"');
+                }
+            }
+            Lex::StrU(n) => {
+                if self.str_is_key {
+                    drop_trailing = self.len - self.cur_drop_to();
+                } else {
+                    drop_trailing = 2 + n as usize; // drop '\u' + n hex digits
+                    append.push(b'"');
+                }
+            }
             Lex::Scalar => {
                 // A scalar is "complete" at EOF only if it's a keyword whose
                 // full length has been consumed (true=4, false=5, null=4).
@@ -437,5 +469,31 @@ mod tests {
     #[test]
     fn whitespace_tolerated() {
         assert_repairs("{  \"a\" : \"b\" , ", r#"{  "a" : "b" }"#);
+    }
+
+    #[test]
+    fn escaped_quote_does_not_close_string() {
+        assert_repairs(r#"{"a":"he said \"hi\" to me"#, r#"{"a":"he said \"hi\" to me"}"#);
+    }
+
+    #[test]
+    fn escaped_backslash_then_quote_closes() {
+        assert_repairs(r#"["c:\\path"#, r#"["c:\\path"]"#);
+    }
+
+    #[test]
+    fn drops_dangling_backslash() {
+        assert_repairs(r#"{"a":"line\"#, r#"{"a":"line"}"#);
+    }
+
+    #[test]
+    fn drops_incomplete_unicode_escape() {
+        assert_repairs(r#"{"a":"caf\u00"#, r#"{"a":"caf"}"#);
+        assert_repairs(r#"{"a":"x\u"#, r#"{"a":"x"}"#);
+    }
+
+    #[test]
+    fn complete_unicode_escape_kept() {
+        assert_repairs(r#"{"a":"café and more"#, r#"{"a":"café and more"}"#);
     }
 }
