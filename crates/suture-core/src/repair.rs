@@ -53,18 +53,18 @@ struct FrameState {
 pub struct StreamRepairer {
     frames: Vec<FrameState>,
     top_pos: Pos,
-    top_drop_to: usize,
     lex: Lex,
     consistent: bool,
     len: usize,
     /// Whether the current/just-finished string sits in an object-key position.
     str_is_key: bool,
-    /// Number of scalar bytes consumed for the current scalar token.
-    scalar_len: usize,
-    /// Expected total length if the scalar is a complete keyword (4 for true/null,
-    /// 5 for false). 0 means it's a number and can never be considered "complete"
-    /// at EOF.
-    scalar_keyword_len: usize,
+    /// Raw bytes of the current scalar token (for shape validation).
+    scalar_buf: Vec<u8>,
+    /// Count of trailing bytes belonging to an as-yet-incomplete multibyte
+    /// UTF-8 char inside the current string (0 when on a char boundary).
+    str_incomplete: usize,
+    /// Total expected byte length of the current multibyte char.
+    str_char_len: usize,
 }
 
 impl Default for StreamRepairer {
@@ -79,6 +79,54 @@ fn is_ws(b: u8) -> bool {
 
 fn is_hex(b: u8) -> bool {
     b.is_ascii_hexdigit()
+}
+
+/// Validate a complete JSON number per RFC 8259 grammar:
+/// `-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?`
+fn is_valid_json_number(b: &[u8]) -> bool {
+    let n = b.len();
+    let mut i = 0;
+    if i < n && b[i] == b'-' {
+        i += 1;
+    }
+    if i >= n {
+        return false;
+    }
+    if b[i] == b'0' {
+        i += 1;
+    } else if b[i].is_ascii_digit() {
+        while i < n && b[i].is_ascii_digit() {
+            i += 1;
+        }
+    } else {
+        return false;
+    }
+    if i < n && b[i] == b'.' {
+        i += 1;
+        if i >= n || !b[i].is_ascii_digit() {
+            return false;
+        }
+        while i < n && b[i].is_ascii_digit() {
+            i += 1;
+        }
+    }
+    if i < n && (b[i] == b'e' || b[i] == b'E') {
+        i += 1;
+        if i < n && (b[i] == b'+' || b[i] == b'-') {
+            i += 1;
+        }
+        if i >= n || !b[i].is_ascii_digit() {
+            return false;
+        }
+        while i < n && b[i].is_ascii_digit() {
+            i += 1;
+        }
+    }
+    i == n
+}
+
+fn is_valid_scalar(b: &[u8]) -> bool {
+    matches!(b, b"true" | b"false" | b"null") || is_valid_json_number(b)
 }
 
 fn is_scalar_start(b: u8) -> bool {
@@ -99,19 +147,44 @@ impl StreamRepairer {
         Self {
             frames: Vec::new(),
             top_pos: Pos::TopBefore,
-            top_drop_to: 0,
             lex: Lex::Between,
             consistent: true,
             len: 0,
             str_is_key: false,
-            scalar_len: 0,
-            scalar_keyword_len: 0,
+            scalar_buf: Vec::new(),
+            str_incomplete: 0,
+            str_char_len: 0,
         }
     }
 
     pub fn push(&mut self, bytes: &[u8]) {
         for &b in bytes {
             self.process(b);
+        }
+    }
+
+    /// Track multibyte UTF-8 progress for raw bytes inside a string.
+    fn track_utf8(&mut self, b: u8) {
+        if b < 0x80 {
+            self.str_incomplete = 0;
+        } else if b >= 0xC0 {
+            // lead byte
+            self.str_char_len = if b >= 0xF0 {
+                4
+            } else if b >= 0xE0 {
+                3
+            } else {
+                2
+            };
+            self.str_incomplete = 1;
+        } else {
+            // continuation byte (0x80..=0xBF)
+            if self.str_incomplete > 0 {
+                self.str_incomplete += 1;
+                if self.str_incomplete >= self.str_char_len {
+                    self.str_incomplete = 0;
+                }
+            }
         }
     }
 
@@ -130,7 +203,7 @@ impl StreamRepairer {
         self.frames
             .last()
             .map(|f| f.elem_drop_to)
-            .unwrap_or(self.top_drop_to)
+            .unwrap_or(0)
     }
 
     fn value_allowed(&self) -> bool {
@@ -148,12 +221,15 @@ impl StreamRepairer {
         }
         match self.lex {
             Lex::Str => match b {
-                b'\\' => self.lex = Lex::StrEsc,
+                b'\\' => {
+                    self.lex = Lex::StrEsc;
+                    self.str_incomplete = 0;
+                }
                 b'"' => {
                     self.lex = Lex::Between;
                     self.complete_string();
                 }
-                _ => {}
+                _ => self.track_utf8(b),
             },
             Lex::StrEsc => {
                 self.lex = if b == b'u' { Lex::StrU(0) } else { Lex::Str };
@@ -167,11 +243,13 @@ impl StreamRepairer {
             }
             Lex::Scalar => {
                 if is_scalar_byte(b) {
-                    self.scalar_len += 1;
+                    self.scalar_buf.push(b);
                 } else {
                     self.lex = Lex::Between;
                     self.complete_scalar();
-                    self.process_between(b, off);
+                    if self.consistent {
+                        self.process_between(b, off);
+                    }
                 }
             }
             Lex::Between => self.process_between(b, off),
@@ -187,6 +265,10 @@ impl StreamRepairer {
     }
 
     fn complete_scalar(&mut self) {
+        if !is_valid_scalar(&self.scalar_buf) {
+            self.consistent = false;
+            return;
+        }
         self.after_value();
     }
 
@@ -228,6 +310,8 @@ impl StreamRepairer {
                     }
                 }
                 self.lex = Lex::Str;
+                self.str_incomplete = 0;
+                self.str_char_len = 0;
             }
             b'{' => {
                 if !self.value_allowed() {
@@ -280,14 +364,8 @@ impl StreamRepairer {
             _ => {
                 if is_scalar_start(b) && self.value_allowed() {
                     self.lex = Lex::Scalar;
-                    self.scalar_len = 1;
-                    // Keywords have a fixed expected total length; numbers do not.
-                    self.scalar_keyword_len = match b {
-                        b't' => 4, // true
-                        b'f' => 5, // false
-                        b'n' => 4, // null
-                        _ => 0,   // numeric: never "complete" at EOF
-                    };
+                    self.scalar_buf.clear();
+                    self.scalar_buf.push(b);
                 } else {
                     self.consistent = false;
                 }
@@ -331,6 +409,7 @@ impl StreamRepairer {
                 if self.str_is_key {
                     drop_trailing = self.len - self.cur_drop_to();
                 } else {
+                    drop_trailing = self.str_incomplete;
                     append.push(b'"');
                 }
             }
@@ -351,16 +430,11 @@ impl StreamRepairer {
                 }
             }
             Lex::Scalar => {
-                // A scalar is "complete" at EOF only if it's a keyword whose
-                // full length has been consumed (true=4, false=5, null=4).
-                // Numbers are always considered incomplete (could be "3" → "30").
-                let scalar_complete = self.scalar_keyword_len > 0
-                    && self.scalar_len == self.scalar_keyword_len;
-                if scalar_complete {
-                    // Treat as if we just finished the scalar normally — just
-                    // need to close the open frames.
+                let is_keyword = matches!(self.scalar_buf.as_slice(), b"true" | b"false" | b"null");
+                if is_keyword {
+                    // complete keyword: keep it; frames closed below
                 } else if self.frames.is_empty() {
-                    // Top-level bare scalar: out of scope, leave unchanged.
+                    // top-level bare scalar: out of scope, leave unchanged
                 } else {
                     drop_trailing = self.len - self.cur_drop_to();
                 }
@@ -400,6 +474,69 @@ impl StreamRepairer {
 mod tests {
     use crate::repair_str;
     use serde_json::Value;
+    use super::StreamRepairer;
+
+    /// Apply an engine repair at the raw-byte level (for testing inputs that are
+    /// not valid UTF-8, which `repair_str` cannot accept).
+    fn engine_repair(bytes: &[u8]) -> Option<Vec<u8>> {
+        let mut r = StreamRepairer::new();
+        r.push(bytes);
+        let rep = r.finish();
+        if !rep.consistent {
+            return None;
+        }
+        let keep = bytes.len() - rep.drop_trailing;
+        let mut out = bytes[..keep].to_vec();
+        out.extend_from_slice(&rep.append);
+        Some(out)
+    }
+
+    #[test]
+    fn truncated_multibyte_char_in_string_value_is_utf8_safe() {
+        // `{"a":"x` followed by the lead byte 0xC3 of 'é' (continuation missing)
+        let mut bytes = br#"{"a":"x"#.to_vec();
+        bytes.push(0xC3);
+        let out = engine_repair(&bytes).expect("should be consistent");
+        let s = std::str::from_utf8(&out).expect("output must be valid UTF-8");
+        serde_json::from_str::<Value>(s).expect("output must parse");
+        assert_eq!(s, r#"{"a":"x"}"#);
+    }
+
+    #[test]
+    fn truncated_emoji_in_string_value_is_utf8_safe() {
+        // `["` + 3 of the 4 bytes of 😀 (F0 9F 98 80)
+        let mut bytes = br#"["#.to_vec();
+        bytes.push(b'"');
+        bytes.extend_from_slice(&[0xF0, 0x9F, 0x98]);
+        let out = engine_repair(&bytes).expect("should be consistent");
+        let s = std::str::from_utf8(&out).expect("output must be valid UTF-8");
+        serde_json::from_str::<Value>(s).expect("output must parse");
+        assert_eq!(s, r#"[""]"#);
+    }
+
+    #[test]
+    fn complete_multibyte_char_kept() {
+        let out = engine_repair("{\"a\":\"café".as_bytes()).expect("consistent");
+        let s = std::str::from_utf8(&out).unwrap();
+        assert_eq!(s, r#"{"a":"café"}"#);
+    }
+
+    #[test]
+    fn malformed_delimited_scalars_are_inconsistent() {
+        assert_eq!(crate::repair_str(r#"{"a":truee}"#), None);
+        assert_eq!(crate::repair_str("[truee]"), None);
+        assert_eq!(crate::repair_str("[nulll]"), None);
+        assert_eq!(crate::repair_str("[falsee]"), None);
+        assert_eq!(crate::repair_str("[1e5e5]"), None);
+        assert_eq!(crate::repair_str("[1..2]"), None);
+        assert_eq!(crate::repair_str("[--1]"), None);
+        assert_eq!(crate::repair_str("[1,2tru]"), None);
+    }
+
+    #[test]
+    fn valid_numbers_still_accepted() {
+        assert_repairs("[0,-0,1.5,-2e10,3.14,1E-5", "[0,-0,1.5,-2e10,3.14]");
+    }
 
     /// Assert the repaired output parses as JSON.
     fn assert_repairs(input: &str, expected: &str) {
