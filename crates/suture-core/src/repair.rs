@@ -496,4 +496,32 @@ mod tests {
     fn complete_unicode_escape_kept() {
         assert_repairs(r#"{"a":"café and more"#, r#"{"a":"café and more"}"#);
     }
+
+    #[test]
+    fn mismatched_closer_is_inconsistent() {
+        assert_eq!(crate::repair_str("[}"), None);
+        assert_eq!(crate::repair_str("{]"), None);
+    }
+
+    #[test]
+    fn underflow_closer_is_inconsistent() {
+        assert_eq!(crate::repair_str("}"), None);
+        assert_eq!(crate::repair_str("[1]]"), None);
+    }
+
+    #[test]
+    fn trailing_comma_before_close_is_inconsistent() {
+        assert_eq!(crate::repair_str("[1,]"), None);
+        assert_eq!(crate::repair_str(r#"{"a":1,}"#), None);
+    }
+
+    #[test]
+    fn missing_comma_between_values_is_inconsistent() {
+        assert_eq!(crate::repair_str("[1 2]"), None);
+    }
+
+    #[test]
+    fn second_top_level_value_is_inconsistent() {
+        assert_eq!(crate::repair_str("{}{}"), None);
+    }
 }
