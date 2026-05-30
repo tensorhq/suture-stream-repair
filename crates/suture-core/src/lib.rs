@@ -27,6 +27,22 @@ pub fn repair_str(input: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
+
+    fn corpus() -> Vec<&'static str> {
+        vec![
+            r#"{}"#,
+            r#"[]"#,
+            r#"{"a":1}"#,
+            r#"{"id":42,"generation":"The application sequence failed"}"#,
+            r#"{"status":"partial","payload_metrics":[250,194,7]}"#,
+            r#"[true,false,null,3.14,-2e10]"#,
+            r#"{"nested":{"a":["x","y"],"b":{"c":1}}}"#,
+            r#"{"s":"with \"quotes\" and \\ and é unicode"}"#,
+            r#"{"tools":[{"name":"f","arguments":"{\"x\":1}"}]}"#,
+            r#"[{"k":[1,[2,[3,[]]]]}]"#,
+        ]
+    }
 
     #[test]
     fn empty_input_is_noop() {
@@ -34,8 +50,51 @@ mod tests {
     }
 
     #[test]
-    fn already_valid_object_unchanged() {
-        // With the stub, an already-valid object round-trips unchanged.
-        assert_eq!(repair_str("{}"), Some("{}".to_string()));
+    fn complete_valid_json_is_noop() {
+        for s in corpus() {
+            let mut r = StreamRepairer::new();
+            r.push(s.as_bytes());
+            let rep = r.finish();
+            assert!(rep.consistent, "should be consistent: {s}");
+            assert!(rep.is_noop(), "complete JSON must be a no-op: {s}");
+        }
+    }
+
+    #[test]
+    fn every_prefix_repairs_to_parseable_json() {
+        for s in corpus() {
+            let bytes = s.as_bytes();
+            for cut in 1..=bytes.len() {
+                // Only test prefixes that end on a UTF-8 char boundary.
+                if !s.is_char_boundary(cut) {
+                    continue;
+                }
+                let prefix = &s[..cut];
+                if let Some(repaired) = repair_str(prefix) {
+                    serde_json::from_str::<Value>(&repaired).unwrap_or_else(|e| {
+                        panic!("prefix {prefix:?} -> {repaired:?} did not parse: {e}")
+                    });
+                }
+                // A `None` result (inconsistent) is acceptable: caller passes through.
+            }
+        }
+    }
+
+    #[test]
+    fn chunking_does_not_change_result() {
+        let s = r#"{"a":["x",{"b":"c"#;
+        let whole = {
+            let mut r = StreamRepairer::new();
+            r.push(s.as_bytes());
+            r.finish()
+        };
+        let chunked = {
+            let mut r = StreamRepairer::new();
+            for byte in s.as_bytes() {
+                r.push(std::slice::from_ref(byte));
+            }
+            r.finish()
+        };
+        assert_eq!(whole, chunked);
     }
 }
