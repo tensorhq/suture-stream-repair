@@ -56,9 +56,30 @@ impl DeltaExtractor for OpenAi {
     }
 
     fn synthesize(&self, repairs: &[Repair], targets: &Targets, terminated: bool) -> Vec<u8> {
-        // Implemented in Task 5.
-        let _ = (repairs, targets, terminated);
-        Vec::new()
+        use crate::extractor::json_escape;
+        use crate::target::TargetKind;
+        let mut out = String::new();
+        let id = targets.id.as_deref().unwrap_or("suture-repair");
+        let model = targets.model.as_deref().unwrap_or("");
+        for r in repairs {
+            let esc = json_escape(&r.append);
+            let delta = match r.kind {
+                TargetKind::Content { choice } => format!(
+                    r#"{{"index":{choice},"delta":{{"content":"{esc}"}},"finish_reason":"length"}}"#
+                ),
+                TargetKind::ToolArgs { choice, tool } => format!(
+                    r#"{{"index":{choice},"delta":{{"tool_calls":[{{"index":{tool},"function":{{"arguments":"{esc}"}}}}]}},"finish_reason":"length"}}"#
+                ),
+                TargetKind::Block { .. } => continue,
+            };
+            out.push_str(&format!(
+                "data: {{\"id\":\"{id}\",\"object\":\"chat.completion.chunk\",\"model\":\"{model}\",\"choices\":[{delta}]}}\n\n"
+            ));
+        }
+        if !terminated {
+            out.push_str("data: [DONE]\n\n");
+        }
+        out.into_bytes()
     }
 }
 

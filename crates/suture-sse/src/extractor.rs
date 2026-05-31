@@ -17,7 +17,21 @@ pub trait DeltaExtractor: Send {
 }
 
 /// A single resolved repair: which target, and the bytes to append to it.
-pub struct Repair<'a> {
-    pub kind: &'a crate::target::TargetKind,
+pub struct Repair {
+    pub kind: crate::target::TargetKind,
     pub append: Vec<u8>,
+}
+
+/// Escape raw bytes for embedding inside a JSON string literal. The repair tail
+/// is always ASCII structural chars (`"`, `}`, `]`).
+pub fn json_escape(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() + 2);
+    for &b in bytes {
+        match b {
+            b'"' => s.push_str("\\\""),
+            b'\\' => s.push_str("\\\\"),
+            _ => s.push(b as char),
+        }
+    }
+    s
 }

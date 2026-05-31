@@ -50,10 +50,27 @@ impl DeltaExtractor for Anthropic {
             .unwrap_or(false)
     }
 
-    fn synthesize(&self, repairs: &[Repair], targets: &Targets, terminated: bool) -> Vec<u8> {
-        // Implemented in Task 5.
-        let _ = (repairs, targets, terminated);
-        Vec::new()
+    fn synthesize(&self, repairs: &[Repair], _targets: &Targets, terminated: bool) -> Vec<u8> {
+        use crate::extractor::json_escape;
+        use crate::target::TargetKind;
+        let mut out = String::new();
+        for r in repairs {
+            let TargetKind::Block { index } = r.kind else { continue };
+            let esc = json_escape(&r.append);
+            out.push_str("event: content_block_delta\n");
+            out.push_str(&format!(
+                "data: {{\"type\":\"content_block_delta\",\"index\":{index},\"delta\":{{\"type\":\"input_json_delta\",\"partial_json\":\"{esc}\"}}}}\n\n"
+            ));
+            out.push_str("event: content_block_stop\n");
+            out.push_str(&format!("data: {{\"type\":\"content_block_stop\",\"index\":{index}}}\n\n"));
+        }
+        if !terminated {
+            out.push_str("event: message_delta\n");
+            out.push_str("data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"}}\n\n");
+            out.push_str("event: message_stop\n");
+            out.push_str("data: {\"type\":\"message_stop\"}\n\n");
+        }
+        out.into_bytes()
     }
 }
 
