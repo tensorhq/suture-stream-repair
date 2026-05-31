@@ -1,3 +1,24 @@
+/// Result of an append-only repair (for streaming passthrough, where already-
+/// emitted bytes cannot be retracted).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppendRepair {
+    /// Structurally consistent so far. If false, pass the original through untouched.
+    pub consistent: bool,
+    /// True if appending `append` to the already-emitted bytes yields valid JSON
+    /// WITHOUT dropping anything. False means append-only cannot fix the tail
+    /// (trailing comma, partial scalar/keyword, mid-escape, incomplete key, or a
+    /// truncated multibyte UTF-8 char) — the caller should skip this target.
+    pub safe: bool,
+    /// Bytes to append when `safe` (optional closing '"' then container closers).
+    pub append: Vec<u8>,
+}
+
+impl AppendRepair {
+    pub fn is_noop(&self) -> bool {
+        self.append.is_empty()
+    }
+}
+
 /// Result of computing how to make a (possibly truncated) JSON byte stream valid.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Repair {
@@ -392,6 +413,49 @@ impl StreamRepairer {
         self.after_value();
     }
 
+    fn cur_seen_member(&self) -> bool {
+        self.frames.last().map(|f| f.seen_member).unwrap_or(false)
+    }
+
+    /// Append-only repair: keep already-emitted bytes, append only closers.
+    /// Suited to streaming passthrough. See `AppendRepair`.
+    pub fn append_repair(&self) -> AppendRepair {
+        if !self.consistent {
+            return AppendRepair { consistent: false, safe: false, append: Vec::new() };
+        }
+        let mut append: Vec<u8> = Vec::new();
+        let safe = match self.lex {
+            Lex::Str => {
+                if self.str_is_key || self.str_incomplete > 0 {
+                    false
+                } else {
+                    append.push(b'"');
+                    true
+                }
+            }
+            Lex::StrEsc | Lex::StrU(_) => false,
+            Lex::Scalar => is_valid_scalar(&self.scalar_buf),
+            Lex::Between => match self.cur_pos() {
+                Pos::TopBefore => {
+                    return AppendRepair { consistent: true, safe: true, append: Vec::new() };
+                }
+                Pos::TopAfter | Pos::ArrAfterElem | Pos::ObjAfterVal => true,
+                Pos::ArrBeforeElem | Pos::ObjBeforeKey => !self.cur_seen_member(),
+                Pos::ObjAfterKey | Pos::ObjBeforeVal => false,
+            },
+        };
+        if !safe {
+            return AppendRepair { consistent: true, safe: false, append: Vec::new() };
+        }
+        for f in self.frames.iter().rev() {
+            append.push(match f.frame {
+                Frame::Object => b'}',
+                Frame::Array => b']',
+            });
+        }
+        AppendRepair { consistent: true, safe: true, append }
+    }
+
     pub fn finish(&self) -> Repair {
         if !self.consistent {
             return Repair {
@@ -660,5 +724,70 @@ mod tests {
     #[test]
     fn second_top_level_value_is_inconsistent() {
         assert_eq!(crate::repair_str("{}{}"), None);
+    }
+
+    /// Apply an append-only repair to a string input.
+    fn append_repair_str(input: &str) -> Option<String> {
+        let mut r = StreamRepairer::new();
+        r.push(input.as_bytes());
+        let ar = r.append_repair();
+        if !ar.consistent || !ar.safe {
+            return None;
+        }
+        let mut out = input.as_bytes().to_vec();
+        out.extend_from_slice(&ar.append);
+        Some(String::from_utf8(out).unwrap())
+    }
+
+    #[test]
+    fn append_closes_mid_string_value() {
+        assert_eq!(append_repair_str(r#"{"a":"hello wor"#).as_deref(), Some(r#"{"a":"hello wor"}"#));
+    }
+
+    #[test]
+    fn append_keeps_complete_scalar_value() {
+        assert_eq!(append_repair_str(r#"{"count":123"#).as_deref(), Some(r#"{"count":123}"#));
+        assert_eq!(append_repair_str("[1,2,3").as_deref(), Some("[1,2,3]"));
+        assert_eq!(append_repair_str("[true,false").as_deref(), Some("[true,false]"));
+    }
+
+    #[test]
+    fn append_closes_nested() {
+        assert_eq!(append_repair_str(r#"{"a":["x",{"b":"c"#).as_deref(), Some(r#"{"a":["x",{"b":"c"}]}"#));
+    }
+
+    #[test]
+    fn append_empty_containers() {
+        assert_eq!(append_repair_str("{").as_deref(), Some("{}"));
+        assert_eq!(append_repair_str("[").as_deref(), Some("[]"));
+    }
+
+    #[test]
+    fn append_unsafe_cases_return_none() {
+        assert_eq!(append_repair_str("[1,2,"), None);
+        assert_eq!(append_repair_str(r#"{"a":1,"#), None);
+        assert_eq!(append_repair_str(r#"{"a":1."#), None);
+        assert_eq!(append_repair_str(r#"{"a":1e"#), None);
+        assert_eq!(append_repair_str("[tru"), None);
+        assert_eq!(append_repair_str(r#"{"a"#), None);
+        assert_eq!(append_repair_str(r#"{"a":"#), None);
+        assert_eq!(append_repair_str(r#"{"a":"x\"#), None);
+        assert_eq!(append_repair_str(r#"{"a":"x\u00"#), None);
+    }
+
+    #[test]
+    fn append_noop_on_complete_json() {
+        let mut r = StreamRepairer::new();
+        r.push(r#"{"a":[1,2]}"#.as_bytes());
+        let ar = r.append_repair();
+        assert!(ar.consistent && ar.safe && ar.is_noop());
+    }
+
+    #[test]
+    fn append_inconsistent_propagates() {
+        let mut r = StreamRepairer::new();
+        r.push("[}".as_bytes());
+        let ar = r.append_repair();
+        assert!(!ar.consistent);
     }
 }

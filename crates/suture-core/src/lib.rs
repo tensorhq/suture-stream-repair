@@ -5,7 +5,7 @@
 
 mod repair;
 
-pub use repair::{Repair, StreamRepairer};
+pub use repair::{AppendRepair, Repair, StreamRepairer};
 
 /// Repair a complete (possibly truncated) JSON string.
 ///
