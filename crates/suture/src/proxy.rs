@@ -6,7 +6,7 @@ use axum::{
     extract::State,
     http::{header, HeaderMap, Method, StatusCode, Uri},
     response::Response,
-    routing::post,
+    routing::{get, post},
     Router,
 };
 use std::sync::Arc;
@@ -23,7 +23,12 @@ pub fn app(cfg: Arc<Config>) -> Router {
     Router::new()
         .route("/v1/chat/completions", post(openai))
         .route("/v1/messages", post(anthropic))
+        .route("/health", get(health))
         .with_state(cfg)
+}
+
+async fn health() -> &'static str {
+    "ok"
 }
 
 async fn openai(
@@ -72,7 +77,11 @@ async fn proxy(
     let client = reqwest::Client::new();
     let mut rb = client.request(method, &url).body(body_bytes.to_vec());
     for (k, v) in headers.iter() {
-        if k == header::HOST || k == header::CONTENT_LENGTH || k == header::CONNECTION {
+        if k == header::HOST
+            || k == header::CONTENT_LENGTH
+            || k == header::CONNECTION
+            || k == header::ACCEPT_ENCODING
+        {
             continue;
         }
         rb = rb.header(k.as_str(), v.as_bytes());
@@ -91,6 +100,13 @@ async fn proxy(
         .unwrap_or("")
         .to_string();
 
+    let encoded = upstream
+        .headers()
+        .get(header::CONTENT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| !v.trim().eq_ignore_ascii_case("identity") && !v.trim().is_empty())
+        .unwrap_or(false);
+
     let mut builder = Response::builder().status(status.as_u16());
     for (k, v) in upstream.headers().iter() {
         if k == header::TRANSFER_ENCODING
@@ -102,7 +118,7 @@ async fn proxy(
         builder = builder.header(k.as_str(), v.as_bytes());
     }
 
-    if ctype.starts_with("text/event-stream") {
+    if ctype.starts_with("text/event-stream") && !encoded {
         let extractor: Box<dyn DeltaExtractor> = match provider {
             Provider::OpenAi => Box::new(OpenAi),
             Provider::Anthropic => Box::new(Anthropic),
@@ -111,7 +127,7 @@ async fn proxy(
         builder
             .body(Body::from_stream(repaired))
             .unwrap_or_else(|_| text_status(StatusCode::INTERNAL_SERVER_ERROR, "body error"))
-    } else if ctype.starts_with("application/json") {
+    } else if ctype.starts_with("application/json") && !encoded {
         let raw = match upstream.bytes().await {
             Ok(b) => b,
             Err(e) => return text_status(StatusCode::BAD_GATEWAY, &format!("upstream read: {e}")),
