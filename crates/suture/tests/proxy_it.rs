@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
 use axum::{body::Body, http::{header, HeaderMap}, response::Response, routing::post, Router};
+use flate2::write::GzEncoder;
+use flate2::Compression;
+use std::io::Write;
 use suture::{config::Config, proxy};
 
 /// Spawn a server on an ephemeral port; return its base URL `http://127.0.0.1:PORT`.
@@ -100,18 +103,30 @@ async fn echo_accept_encoding(headers: HeaderMap) -> Response {
         .unwrap()
 }
 
-async fn mock_encoded_sse() -> Response {
-    // Pretend-encoded SSE body: the guard must passthrough unchanged (no synthetic [DONE]).
+async fn mock_unknown_encoded() -> Response {
     Response::builder()
         .status(200)
         .header(header::CONTENT_TYPE, "text/event-stream")
-        .header(header::CONTENT_ENCODING, "gzip")
+        .header(header::CONTENT_ENCODING, "zstd")
         .body(Body::from("RAWBYTES"))
         .unwrap()
 }
 
+async fn mock_gzip_truncated_sse() -> Response {
+    let sse = "data: {\"id\":\"c1\",\"model\":\"gpt-4\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"city\\\":\\\"Par\"}}]}}]}\n\n";
+    let mut e = GzEncoder::new(Vec::new(), Compression::default());
+    e.write_all(sse.as_bytes()).unwrap();
+    let gz = e.finish().unwrap();
+    Response::builder()
+        .status(200)
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CONTENT_ENCODING, "gzip")
+        .body(Body::from(gz))
+        .unwrap()
+}
+
 #[tokio::test]
-async fn strips_accept_encoding_to_upstream() {
+async fn forwards_accept_encoding_to_upstream() {
     let up = spawn(Router::new().route("/v1/chat/completions", post(echo_accept_encoding))).await;
     let cfg = std::sync::Arc::new(Config::from_map(|k| match k {
         "SUTURE_OPENAI_BASE" => Some(up.clone()),
@@ -120,7 +135,7 @@ async fn strips_accept_encoding_to_upstream() {
     let proxy_url = spawn(proxy::app(cfg)).await;
     let body = reqwest::Client::new()
         .post(format!("{proxy_url}/v1/chat/completions"))
-        .header("accept-encoding", "gzip, br")
+        .header("accept-encoding", "gzip")
         .body("{}")
         .send()
         .await
@@ -128,12 +143,12 @@ async fn strips_accept_encoding_to_upstream() {
         .text()
         .await
         .unwrap();
-    assert_eq!(body, r#"{"ae":"ABSENT"}"#, "Accept-Encoding must be stripped before upstream");
+    assert_eq!(body, r#"{"ae":"gzip"}"#);
 }
 
 #[tokio::test]
-async fn passes_through_encoded_response_unchanged() {
-    let up = spawn(Router::new().route("/v1/chat/completions", post(mock_encoded_sse))).await;
+async fn passes_through_unknown_encoding_unchanged() {
+    let up = spawn(Router::new().route("/v1/chat/completions", post(mock_unknown_encoded))).await;
     let cfg = std::sync::Arc::new(Config::from_map(|k| match k {
         "SUTURE_OPENAI_BASE" => Some(up.clone()),
         _ => None,
@@ -145,11 +160,46 @@ async fn passes_through_encoded_response_unchanged() {
         .send()
         .await
         .unwrap();
-    // reqwest may or may not auto-decode; disable by checking the raw header + bytes.
-    let ce = resp.headers().get("content-encoding").map(|v| v.to_str().unwrap().to_string());
-    let bytes = resp.bytes().await.unwrap();
-    assert_eq!(ce.as_deref(), Some("gzip"), "Content-Encoding preserved");
-    assert_eq!(&bytes[..], b"RAWBYTES", "encoded body must pass through unchanged (no synthetic [DONE])");
+    assert_eq!(resp.headers().get("content-encoding").unwrap(), "zstd");
+    assert_eq!(&resp.bytes().await.unwrap()[..], b"RAWBYTES");
+}
+
+#[tokio::test]
+async fn repairs_gzip_compressed_sse_end_to_end() {
+    let up = spawn(Router::new().route("/v1/chat/completions", post(mock_gzip_truncated_sse))).await;
+    let cfg = std::sync::Arc::new(Config::from_map(|k| match k {
+        "SUTURE_OPENAI_BASE" => Some(up.clone()),
+        _ => None,
+    }));
+    let proxy_url = spawn(proxy::app(cfg)).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("{proxy_url}/v1/chat/completions"))
+        .header("accept-encoding", "gzip")
+        .body(r#"{"stream":true}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.headers().get("content-encoding").map(|v| v.to_str().unwrap()), Some("gzip"));
+    let gz = resp.bytes().await.unwrap();
+
+    // gunzip (our reqwest has no auto-decompress)
+    let mut d = flate2::read::GzDecoder::new(&gz[..]);
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut d, &mut text).unwrap();
+
+    let mut parser = suture_sse::SseParser::new();
+    let mut args = String::new();
+    for data in parser.push(text.as_bytes()) {
+        if data == b"[DONE]" { continue; }
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&data) {
+            if let Some(a) = v["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"].as_str() {
+                args.push_str(a);
+            }
+        }
+    }
+    assert_eq!(args, r#"{"city":"Par"}"#);
+    serde_json::from_str::<serde_json::Value>(&args).expect("repaired args must parse");
 }
 
 #[tokio::test]
