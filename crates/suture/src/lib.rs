@@ -3,6 +3,7 @@
 //! Library surface re-exports the repair engine; the `suture` binary is the proxy.
 
 pub mod config;
+pub mod encoding;
 pub mod proxy;
 
 pub use config::Config;
