@@ -65,10 +65,10 @@ impl DeltaExtractor for OpenAi {
             let esc = json_escape(&r.append);
             let delta = match r.kind {
                 TargetKind::Content { choice } => format!(
-                    r#"{{"index":{choice},"delta":{{"content":"{esc}"}},"finish_reason":"length"}}"#
+                    r#"{{"index":{choice},"delta":{{"content":"{esc}"}}}}"#
                 ),
                 TargetKind::ToolArgs { choice, tool } => format!(
-                    r#"{{"index":{choice},"delta":{{"tool_calls":[{{"index":{tool},"function":{{"arguments":"{esc}"}}}}]}},"finish_reason":"length"}}"#
+                    r#"{{"index":{choice},"delta":{{"tool_calls":[{{"index":{tool},"function":{{"arguments":"{esc}"}}}}]}}}}"#
                 ),
                 TargetKind::Block { .. } => continue,
             };
