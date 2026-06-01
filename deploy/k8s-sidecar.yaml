@@ -1,0 +1,54 @@
+# Kubernetes (GKE/EKS) sidecar pattern — the lowest-latency deployment.
+#
+# Suture runs in the SAME pod as your app and is reached over localhost, so the
+# only added hop is in-pod. Your app points its OpenAI/Anthropic SDK base_url at
+# http://localhost:8787/v1 (the API key still flows through as a header — Suture
+# holds no secrets).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: myapp
+  template:
+    metadata:
+      labels:
+        app: myapp
+    spec:
+      containers:
+        - name: app
+          image: myapp:latest
+          env:
+            # Point your SDK at the sidecar.
+            - name: OPENAI_BASE_URL
+              value: "http://localhost:8787/v1"
+            - name: ANTHROPIC_BASE_URL
+              value: "http://localhost:8787"
+        - name: suture
+          image: REGISTRY/suture:latest
+          ports:
+            - containerPort: 8787
+          env:
+            # localhost-only: only the app in this pod can reach the sidecar.
+            - name: SUTURE_LISTEN
+              value: "127.0.0.1:8787"
+            - name: SUTURE_OPENAI_BASE
+              value: "https://api.openai.com"
+            - name: SUTURE_ANTHROPIC_BASE
+              value: "https://api.anthropic.com"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8787
+            initialDelaySeconds: 1
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "32Mi"
+            limits:
+              cpu: "500m"
+              memory: "128Mi"

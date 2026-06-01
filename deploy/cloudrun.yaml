@@ -1,0 +1,41 @@
+# GCP Cloud Run (Knative) service for Suture.
+#
+#   gcloud run services replace deploy/cloudrun.yaml --region REGION
+#
+# Replace REGION/PROJECT/REPO with your Artifact Registry path. Cloud Run streams
+# responses by default (HTTP/1.1 chunked), which Suture's SSE repair requires.
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: suture
+spec:
+  template:
+    metadata:
+      annotations:
+        # Keep >=1 warm instance: cold starts add latency, defeating the purpose.
+        autoscaling.knative.dev/minScale: "1"
+        autoscaling.knative.dev/maxScale: "20"
+    spec:
+      containerConcurrency: 80
+      timeoutSeconds: 3600 # allow long-lived streaming responses
+      containers:
+        - image: REGION-docker.pkg.dev/PROJECT/REPO/suture:latest
+          ports:
+            - containerPort: 8787
+          env:
+            - name: SUTURE_LISTEN
+              value: "0.0.0.0:8787"
+            - name: SUTURE_OPENAI_BASE
+              value: "https://api.openai.com"
+            - name: SUTURE_ANTHROPIC_BASE
+              value: "https://api.anthropic.com"
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8787
+            failureThreshold: 3
+            periodSeconds: 5
+          resources:
+            limits:
+              cpu: "1"
+              memory: "256Mi"

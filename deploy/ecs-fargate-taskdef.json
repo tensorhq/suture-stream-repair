@@ -1,0 +1,30 @@
+{
+  "_comment": "AWS ECS/Fargate task definition for Suture. Register with: aws ecs register-task-definition --cli-input-json file://deploy/ecs-fargate-taskdef.json . Health checks are done at the ALB target group (HTTP GET /health on port 8787) because the distroless image has no shell for a container-level healthCheck. Place behind an ALB with response buffering disabled so SSE streams through. Replace ACCOUNT/REGION.",
+  "family": "suture",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT:role/ecsTaskExecutionRole",
+  "containerDefinitions": [
+    {
+      "name": "suture",
+      "image": "ACCOUNT.dkr.ecr.REGION.amazonaws.com/suture:latest",
+      "essential": true,
+      "portMappings": [{ "containerPort": 8787, "protocol": "tcp" }],
+      "environment": [
+        { "name": "SUTURE_LISTEN", "value": "0.0.0.0:8787" },
+        { "name": "SUTURE_OPENAI_BASE", "value": "https://api.openai.com" },
+        { "name": "SUTURE_ANTHROPIC_BASE", "value": "https://api.anthropic.com" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/suture",
+          "awslogs-region": "REGION",
+          "awslogs-stream-prefix": "suture"
+        }
+      }
+    }
+  ]
+}
