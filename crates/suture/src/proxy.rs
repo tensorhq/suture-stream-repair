@@ -182,15 +182,47 @@ async fn proxy(
     }
 }
 
-/// Choose the downstream body encoding from the client's `Accept-Encoding`
-/// (preference: br > gzip > deflate > identity). q-values are ignored.
+/// Choose the downstream body encoding from the client's `Accept-Encoding`.
+/// Honors q-values: a coding with `q=0` is "not acceptable" and is dropped.
+/// Among acceptable codings we support, preference is br > gzip > deflate; otherwise
+/// identity (always acceptable).
 fn pick_encoding(accept: Option<&str>) -> Encoding {
-    let a = accept.unwrap_or("").to_ascii_lowercase();
-    if a.split(',').any(|t| t.trim().starts_with("br")) {
+    let accept = match accept {
+        Some(a) => a,
+        None => return Encoding::Identity,
+    };
+    let mut br = false;
+    let mut gzip = false;
+    let mut deflate = false;
+    for part in accept.split(',') {
+        let mut fields = part.split(';');
+        let token = fields.next().unwrap_or("").trim().to_ascii_lowercase();
+        if token.is_empty() {
+            continue;
+        }
+        // Default q is 1.0; an explicit q=0 makes the coding unacceptable.
+        let mut q = 1.0f32;
+        for field in fields {
+            let field = field.trim();
+            if let Some(rest) = field.strip_prefix("q=") {
+                q = rest.trim().parse().unwrap_or(0.0);
+            }
+        }
+        if q <= 0.0 {
+            continue;
+        }
+        match token.as_str() {
+            "br" => br = true,
+            "gzip" | "x-gzip" => gzip = true,
+            "deflate" => deflate = true,
+            _ => {}
+        }
+    }
+    if br {
         Encoding::Brotli
-    } else if a.contains("gzip") {
+    } else if gzip {
         Encoding::Gzip
-    } else if a.contains("deflate") {
+    } else if deflate {
         Encoding::Deflate
     } else {
         Encoding::Identity
@@ -212,4 +244,27 @@ fn text_status(code: StatusCode, msg: &str) -> Response {
         .header(header::CONTENT_TYPE, "text/plain")
         .body(Body::from(msg.to_string()))
         .unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pick_encoding_honors_qvalues() {
+        assert_eq!(pick_encoding(None), Encoding::Identity);
+        assert_eq!(pick_encoding(Some("")), Encoding::Identity);
+        assert_eq!(pick_encoding(Some("identity")), Encoding::Identity);
+        assert_eq!(pick_encoding(Some("gzip")), Encoding::Gzip);
+        assert_eq!(pick_encoding(Some("deflate")), Encoding::Deflate);
+        // preference: br beats gzip when both acceptable
+        assert_eq!(pick_encoding(Some("gzip, br")), Encoding::Brotli);
+        // q=0 means NOT acceptable -> must be dropped
+        assert_eq!(pick_encoding(Some("br;q=0")), Encoding::Identity);
+        assert_eq!(pick_encoding(Some("gzip, br;q=0")), Encoding::Gzip);
+        assert_eq!(pick_encoding(Some("gzip;q=0, identity")), Encoding::Identity);
+        // whitespace / q with decimals
+        assert_eq!(pick_encoding(Some("br; q=0.0, gzip; q=0.9")), Encoding::Gzip);
+        assert_eq!(pick_encoding(Some(" gzip ")), Encoding::Gzip);
+    }
 }
