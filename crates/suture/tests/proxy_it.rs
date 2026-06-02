@@ -202,6 +202,99 @@ async fn repairs_gzip_compressed_sse_end_to_end() {
     serde_json::from_str::<serde_json::Value>(&args).expect("repaired args must parse");
 }
 
+async fn mock_vertex_claude_truncated(headers: axum::http::HeaderMap) -> Response {
+    let auth = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let sse = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"a\\\":[1,2\"}}\n\n";
+    Response::builder()
+        .status(200)
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header("x-seen-auth", auth)
+        .body(Body::from(sse))
+        .unwrap()
+}
+
+async fn mock_vertex_gemini_truncated() -> Response {
+    let sse = "data: {\"candidates\":[{\"index\":0,\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"{\\\"city\\\":\\\"Par\"}]}}]}\n\n";
+    Response::builder()
+        .status(200)
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .body(Body::from(sse))
+        .unwrap()
+}
+
+fn vertex_cfg(upstream: &str) -> std::sync::Arc<Config> {
+    std::sync::Arc::new(Config::from_map(|k| match k {
+        "SUTURE_VERTEX_ENABLED" => Some("1".to_string()),
+        "SUTURE_VERTEX_BASE" => Some(upstream.to_string()),
+        _ => None,
+    }))
+}
+
+#[tokio::test]
+async fn vertex_claude_repaired_and_forwards_bearer() {
+    let up = spawn(Router::new().route("/v1/projects/*rest", post(mock_vertex_claude_truncated))).await;
+    let proxy_url = spawn(proxy::app(vertex_cfg(&up))).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("{proxy_url}/v1/projects/p/locations/us-central1/publishers/anthropic/models/claude:streamRawPredict"))
+        .header("authorization", "Bearer ya29.test-token")
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.headers().get("x-seen-auth").unwrap(), "Bearer ya29.test-token");
+    let text = resp.text().await.unwrap();
+
+    let mut parser = suture_sse::SseParser::new();
+    let mut pj = String::new();
+    for data in parser.push(text.as_bytes()) {
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&data) {
+            if v["delta"]["type"] == "input_json_delta" {
+                if let Some(s) = v["delta"]["partial_json"].as_str() {
+                    pj.push_str(s);
+                }
+            }
+        }
+    }
+    assert_eq!(pj, r#"{"a":[1,2]}"#);
+    serde_json::from_str::<serde_json::Value>(&pj).expect("repaired input must parse");
+}
+
+#[tokio::test]
+async fn vertex_gemini_json_text_repaired() {
+    let up = spawn(Router::new().route("/v1/projects/*rest", post(mock_vertex_gemini_truncated))).await;
+    let proxy_url = spawn(proxy::app(vertex_cfg(&up))).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("{proxy_url}/v1/projects/p/locations/us-central1/publishers/google/models/gemini:streamGenerateContent?alt=sse"))
+        .header("authorization", "Bearer ya29.x")
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    let text = resp.text().await.unwrap();
+
+    let mut parser = suture_sse::SseParser::new();
+    let mut content = String::new();
+    for data in parser.push(text.as_bytes()) {
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&data) {
+            if let Some(parts) = v["candidates"][0]["content"]["parts"].as_array() {
+                for p in parts {
+                    if let Some(t) = p["text"].as_str() {
+                        content.push_str(t);
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(content, r#"{"city":"Par"}"#);
+    serde_json::from_str::<serde_json::Value>(&content).expect("repaired text must parse");
+}
+
 #[tokio::test]
 async fn health_returns_ok() {
     let cfg = std::sync::Arc::new(Config::from_map(|_| None));
