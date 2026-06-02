@@ -48,14 +48,33 @@ design: Suture runs in the same pod/task as the app and is reached over
   to the upstream, so it stores no credentials. This works for OpenAI/Anthropic
   *direct*.
 
+## GCP Vertex AI
+
+Enable with `SUTURE_VERTEX_ENABLED=1`. Point your Vertex SDK / HTTP client at Suture;
+Suture derives the regional upstream host from the request path's `locations/{region}`
+segment, so no region config is needed (optional `SUTURE_VERTEX_BASE` overrides it).
+
+- **Auth:** unchanged — your client supplies the GCP OAuth bearer token (its SDK
+  auto-refreshes it); Suture forwards `Authorization` verbatim and stores nothing.
+- **Claude-on-Vertex** (`:streamRawPredict`) returns Anthropic SSE and is repaired with
+  the Anthropic logic.
+- **Gemini** (`:streamGenerateContent`) must be called with **`?alt=sse`** so Suture sees
+  an SSE stream; it repairs truncated JSON-mode output (`responseMimeType:
+  application/json`). Without `?alt=sse`, Vertex returns a JSON array, which falls back to
+  whole-body JSON repair.
+
+## Compression
+
+Suture forwards the client's `Accept-Encoding` to the upstream, decodes the response
+(gzip/brotli/deflate), repairs it, and re-encodes for the client per its `Accept-Encoding`
+(honoring q-values) — so compression no longer prevents repair. An upstream coding Suture
+can't decode is passed through verbatim without repair (never corrupted).
+
 ## Not supported yet
 
-- **AWS Bedrock / GCP Vertex AI** as upstreams: Bedrock uses binary
-  `application/vnd.amazon.eventstream` framing + SigV4 auth; Vertex Gemini uses
-  its own schema + GCP OAuth. Suture currently speaks only OpenAI/Anthropic
-  *direct* SSE with bearer/`x-api-key` passthrough. Support requires transport
-  codecs + auth adapters (a planned Phase 4); the `suture-core` repair engine is
-  reusable as-is.
-- **Compressed upstreams:** Suture forces identity encoding to the upstream and
-  passes through (without repairing) any response that arrives content-encoded.
-  End-to-end compression with repair is part of the Phase 4 transport work.
+- **AWS Bedrock** as an upstream: it uses binary `application/vnd.amazon.eventstream`
+  framing, so it needs a Bedrock transport codec (a planned phase). Auth is already
+  credential-free — the client pre-signs for the real Bedrock host and Suture forwards
+  verbatim; the `suture-core` repair engine is reusable as-is.
+- **OpenAI-compatible translation** to other providers — Suture forwards each provider's
+  native API; it does not translate request/response schemas.
