@@ -2,6 +2,7 @@
 
 mod anthropic;
 mod extractor;
+mod gemini;
 mod openai;
 mod repairer;
 mod sse_parse;
@@ -10,6 +11,7 @@ mod target;
 
 pub use anthropic::Anthropic;
 pub use extractor::{DeltaExtractor, Repair};
+pub use gemini::Gemini;
 pub use openai::OpenAi;
 pub use repairer::SseRepairer;
 pub use sse_parse::SseParser;
