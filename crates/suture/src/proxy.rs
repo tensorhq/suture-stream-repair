@@ -11,25 +11,26 @@ use axum::{
     Router,
 };
 use std::sync::Arc;
-use suture_sse::{repair_stream, Anthropic, DeltaExtractor, OpenAi};
-
-#[derive(Clone, Copy)]
-enum Provider {
-    OpenAi,
-    Anthropic,
-}
+use suture_sse::{repair_stream, Anthropic, DeltaExtractor, Gemini, OpenAi};
 
 /// Build the proxy router.
 pub fn app(cfg: Arc<Config>) -> Router {
-    Router::new()
+    let mut router = Router::new()
         .route("/v1/chat/completions", post(openai))
         .route("/v1/messages", post(anthropic))
-        .route("/health", get(health))
-        .with_state(cfg)
+        .route("/health", get(health));
+    if cfg.vertex_enabled {
+        router = router.route("/v1/projects/*rest", post(vertex));
+    }
+    router.with_state(cfg)
 }
 
 async fn health() -> &'static str {
     "ok"
+}
+
+fn path_and_query(uri: &Uri) -> &str {
+    uri.path_and_query().map(|p| p.as_str()).unwrap_or(uri.path())
 }
 
 async fn openai(
@@ -39,7 +40,8 @@ async fn openai(
     headers: HeaderMap,
     body: Body,
 ) -> Response {
-    proxy(cfg, Provider::OpenAi, method, uri, headers, body).await
+    let url = format!("{}{}", cfg.openai_base, path_and_query(&uri));
+    proxy(url, Box::new(OpenAi), method, headers, body).await
 }
 
 async fn anthropic(
@@ -49,23 +51,59 @@ async fn anthropic(
     headers: HeaderMap,
     body: Body,
 ) -> Response {
-    proxy(cfg, Provider::Anthropic, method, uri, headers, body).await
+    let url = format!("{}{}", cfg.anthropic_base, path_and_query(&uri));
+    proxy(url, Box::new(Anthropic), method, headers, body).await
 }
 
-fn upstream_url(cfg: &Config, provider: Provider, uri: &Uri) -> String {
-    let base = match provider {
-        Provider::OpenAi => &cfg.openai_base,
-        Provider::Anthropic => &cfg.anthropic_base,
+async fn vertex(
+    State(cfg): State<Arc<Config>>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let host = match vertex_host(&cfg, uri.path()) {
+        Some(h) => h,
+        None => return text_status(StatusCode::BAD_REQUEST, "vertex: cannot derive region from path"),
     };
-    let path_q = uri.path_and_query().map(|p| p.as_str()).unwrap_or(uri.path());
-    format!("{base}{path_q}")
+    let url = format!("{host}{}", path_and_query(&uri));
+    let extractor = vertex_extractor(uri.path());
+    proxy(url, extractor, method, headers, body).await
+}
+
+/// Derive the Vertex upstream host from the request path's `locations/{region}`
+/// segment (or use `SUTURE_VERTEX_BASE` if set). Returns None if neither works.
+fn vertex_host(cfg: &Config, path: &str) -> Option<String> {
+    if let Some(base) = &cfg.vertex_base {
+        return Some(base.clone());
+    }
+    let region = path.split('/').skip_while(|s| *s != "locations").nth(1)?;
+    if region.is_empty() {
+        return None;
+    }
+    if region == "global" {
+        Some("https://aiplatform.googleapis.com".to_string())
+    } else {
+        Some(format!("https://{region}-aiplatform.googleapis.com"))
+    }
+}
+
+/// Select the repair extractor for a Vertex request by path. `streamGenerateContent`
+/// / `publishers/google` is Gemini; everything else (notably `streamRawPredict` /
+/// `publishers/anthropic`) uses the Anthropic extractor, which safely no-ops on
+/// non-Anthropic events.
+fn vertex_extractor(path: &str) -> Box<dyn DeltaExtractor> {
+    if path.contains(":streamGenerateContent") || path.contains("/publishers/google/") {
+        Box::new(Gemini)
+    } else {
+        Box::new(Anthropic)
+    }
 }
 
 async fn proxy(
-    cfg: Arc<Config>,
-    provider: Provider,
+    url: String,
+    extractor: Box<dyn DeltaExtractor>,
     method: Method,
-    uri: Uri,
     headers: HeaderMap,
     body: Body,
 ) -> Response {
@@ -76,7 +114,6 @@ async fn proxy(
         Err(_) => return text_status(StatusCode::BAD_REQUEST, "invalid request body"),
     };
 
-    let url = upstream_url(&cfg, provider, &uri);
     let client_enc = pick_encoding(
         headers
             .get(header::ACCEPT_ENCODING)
@@ -86,8 +123,6 @@ async fn proxy(
     let client = reqwest::Client::new();
     let mut rb = client.request(method, &url).body(body_bytes.to_vec());
     for (k, v) in headers.iter() {
-        // Forward everything except hop-by-hop/length/host. Accept-Encoding IS now
-        // forwarded (we decode the response ourselves).
         if k == header::HOST || k == header::CONTENT_LENGTH || k == header::CONNECTION {
             continue;
         }
@@ -115,7 +150,6 @@ async fn proxy(
 
     let mut builder = Response::builder().status(status.as_u16());
     for (k, v) in upstream.headers().iter() {
-        // We manage framing + encoding headers for the new body.
         if k == header::TRANSFER_ENCODING
             || k == header::CONTENT_LENGTH
             || k == header::CONNECTION
@@ -126,7 +160,6 @@ async fn proxy(
         builder = builder.header(k.as_str(), v.as_bytes());
     }
 
-    // Unknown upstream coding: cannot decode → pass through verbatim (never corrupt).
     if upstream_enc == Encoding::Unknown {
         if let Some(ce) = &orig_ce {
             builder = builder.header(header::CONTENT_ENCODING.as_str(), ce.as_bytes());
@@ -137,10 +170,6 @@ async fn proxy(
     }
 
     if ctype.starts_with("text/event-stream") {
-        let extractor: Box<dyn DeltaExtractor> = match provider {
-            Provider::OpenAi => Box::new(OpenAi),
-            Provider::Anthropic => Box::new(Anthropic),
-        };
         let raw = upstream
             .bytes_stream()
             .map(|r| r.map_err(std::io::Error::other));
@@ -172,7 +201,6 @@ async fn proxy(
             Err(e) => text_status(StatusCode::BAD_GATEWAY, &format!("decode error: {e}")),
         }
     } else {
-        // Other content types: pass through verbatim (re-add original encoding).
         if let Some(ce) = &orig_ce {
             builder = builder.header(header::CONTENT_ENCODING.as_str(), ce.as_bytes());
         }
@@ -266,5 +294,47 @@ mod tests {
         // whitespace / q with decimals
         assert_eq!(pick_encoding(Some("br; q=0.0, gzip; q=0.9")), Encoding::Gzip);
         assert_eq!(pick_encoding(Some(" gzip ")), Encoding::Gzip);
+    }
+
+    #[test]
+    fn vertex_host_derives_region() {
+        let cfg = Config::from_map(|_| None);
+        assert_eq!(
+            vertex_host(&cfg, "/v1/projects/p/locations/us-central1/publishers/google/models/gemini:streamGenerateContent").as_deref(),
+            Some("https://us-central1-aiplatform.googleapis.com")
+        );
+        assert_eq!(
+            vertex_host(&cfg, "/v1/projects/p/locations/global/publishers/anthropic/models/claude:streamRawPredict").as_deref(),
+            Some("https://aiplatform.googleapis.com")
+        );
+        assert_eq!(vertex_host(&cfg, "/v1/projects/p/no-region-here").as_deref(), None);
+    }
+
+    #[test]
+    fn vertex_host_override_wins() {
+        let cfg = Config::from_map(|k| match k {
+            "SUTURE_VERTEX_BASE" => Some("http://localhost:9/".to_string()),
+            _ => None,
+        });
+        assert_eq!(
+            vertex_host(&cfg, "/v1/projects/p/locations/eu/publishers/google/models/g:streamGenerateContent").as_deref(),
+            Some("http://localhost:9")
+        );
+    }
+
+    #[test]
+    fn vertex_extractor_selection() {
+        use suture_sse::{Repair, TargetKind, Targets};
+        let targets = Targets::new();
+
+        let gem = vertex_extractor("/v1/projects/p/locations/us/publishers/google/models/g:streamGenerateContent");
+        let g_repairs = vec![Repair { kind: TargetKind::Content { choice: 0 }, append: b"\"}".to_vec() }];
+        let g_out = String::from_utf8(gem.synthesize(&g_repairs, &targets, false)).unwrap();
+        assert!(g_out.contains("candidates"), "google path -> Gemini: {g_out}");
+
+        let ant = vertex_extractor("/v1/projects/p/locations/us/publishers/anthropic/models/c:streamRawPredict");
+        let a_repairs = vec![Repair { kind: TargetKind::Block { index: 0 }, append: b"}".to_vec() }];
+        let a_out = String::from_utf8(ant.synthesize(&a_repairs, &targets, false)).unwrap();
+        assert!(a_out.contains("content_block_delta"), "anthropic path -> Anthropic: {a_out}");
     }
 }
