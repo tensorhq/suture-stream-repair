@@ -28,3 +28,8 @@ tokio-util = { version = "0.7", features = ["io"] }
 futures = "0.3"
 serde_json = "1"
 flate2 = "1"
+criterion = { version = "0.5", features = ["async_tokio"] }
+
+[[bench]]
+name = "codec"
+harness = false
