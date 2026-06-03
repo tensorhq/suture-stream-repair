@@ -1,6 +1,7 @@
 //! SSE-aware JSON stream repair for OpenAI and Anthropic streaming responses.
 
 mod anthropic;
+mod converse;
 mod eventstream;
 mod extractor;
 mod gemini;
@@ -11,6 +12,7 @@ pub mod stream;
 mod target;
 
 pub use anthropic::Anthropic;
+pub use converse::{eventstream_repair_stream, EventStreamRepairer};
 pub use extractor::{DeltaExtractor, Repair};
 pub use gemini::Gemini;
 pub use openai::OpenAi;
