@@ -29,9 +29,15 @@ impl DeltaExtractor for OpenAi {
         };
         for choice in choices {
             let ci = choice.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
-            let Some(delta) = choice.get("delta") else { continue };
+            let Some(delta) = choice.get("delta") else {
+                continue;
+            };
             if let Some(content) = delta.get("content").and_then(Value::as_str) {
-                targets.feed(TargetKind::Content { choice: ci }, false, content.as_bytes());
+                targets.feed(
+                    TargetKind::Content { choice: ci },
+                    false,
+                    content.as_bytes(),
+                );
             }
             if let Some(tcs) = delta.get("tool_calls").and_then(Value::as_array) {
                 for tc in tcs {
@@ -41,7 +47,14 @@ impl DeltaExtractor for OpenAi {
                         .and_then(|f| f.get("arguments"))
                         .and_then(Value::as_str)
                     {
-                        targets.feed(TargetKind::ToolArgs { choice: ci, tool: ti }, true, args.as_bytes());
+                        targets.feed(
+                            TargetKind::ToolArgs {
+                                choice: ci,
+                                tool: ti,
+                            },
+                            true,
+                            args.as_bytes(),
+                        );
                     }
                 }
             }
@@ -64,9 +77,9 @@ impl DeltaExtractor for OpenAi {
         for r in repairs {
             let esc = json_escape(&r.append);
             let delta = match r.kind {
-                TargetKind::Content { choice } => format!(
-                    r#"{{"index":{choice},"delta":{{"content":"{esc}"}}}}"#
-                ),
+                TargetKind::Content { choice } => {
+                    format!(r#"{{"index":{choice},"delta":{{"content":"{esc}"}}}}"#)
+                }
                 TargetKind::ToolArgs { choice, tool } => format!(
                     r#"{{"index":{choice},"delta":{{"tool_calls":[{{"index":{tool},"function":{{"arguments":"{esc}"}}}}]}}}}"#
                 ),
@@ -120,7 +133,10 @@ mod tests {
     fn plain_text_content_not_repaired() {
         let ext = OpenAi;
         let mut t = Targets::new();
-        ext.on_event(br#"{"choices":[{"index":0,"delta":{"content":"Hello, I am"}}]}"#, &mut t);
+        ext.on_event(
+            br#"{"choices":[{"index":0,"delta":{"content":"Hello, I am"}}]}"#,
+            &mut t,
+        );
         let state = t.iter().next().unwrap();
         assert!(!state.repairable(), "prose content must not be repaired");
     }
@@ -129,7 +145,10 @@ mod tests {
     fn json_content_is_repaired() {
         let ext = OpenAi;
         let mut t = Targets::new();
-        ext.on_event(br#"{"choices":[{"index":0,"delta":{"content":"{\"k\":\"v"}}]}"#, &mut t);
+        ext.on_event(
+            br#"{"choices":[{"index":0,"delta":{"content":"{\"k\":\"v"}}]}"#,
+            &mut t,
+        );
         let state = t.iter().next().unwrap();
         assert!(state.repairable());
         let r = state.repair();

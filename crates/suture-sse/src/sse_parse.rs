@@ -18,7 +18,11 @@ impl Default for SseParser {
 
 impl SseParser {
     pub fn new() -> Self {
-        Self { buf: Vec::new(), data: Vec::new(), saw_data: false }
+        Self {
+            buf: Vec::new(),
+            data: Vec::new(),
+            saw_data: false,
+        }
     }
 
     /// Feed a chunk; returns the data payloads of any events completed by it.

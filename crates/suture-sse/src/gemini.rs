@@ -99,7 +99,10 @@ mod tests {
             br#"{"candidates":[{"index":0,"content":{"parts":[{"functionCall":{"name":"f","args":{"x":1}}}]}}]}"#,
             &mut t,
         );
-        assert!(t.iter().next().is_none(), "functionCall parts create no target");
+        assert!(
+            t.iter().next().is_none(),
+            "functionCall parts create no target"
+        );
     }
 
     #[test]

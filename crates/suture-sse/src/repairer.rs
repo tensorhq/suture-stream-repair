@@ -102,11 +102,16 @@ impl SseRepairer {
             }
             let ar = state.repair();
             if ar.consistent && ar.safe && !ar.is_noop() {
-                repairs.push(Repair { kind: state.kind.clone(), append: ar.append });
+                repairs.push(Repair {
+                    kind: state.kind.clone(),
+                    append: ar.append,
+                });
             }
         }
         // `synthesize` emits a terminator only when `terminated` is false.
-        let mut out = self.extractor.synthesize(&repairs, &self.targets, self.terminated);
+        let mut out = self
+            .extractor
+            .synthesize(&repairs, &self.targets, self.terminated);
         out.extend_from_slice(&self.held_terminator);
         Bytes::from(out)
     }
@@ -180,7 +185,11 @@ mod tests {
         out.extend_from_slice(&r.finish());
 
         // The truncated partial event must NOT have been forwarded (no corruption).
-        assert!(!out.windows(2).any(|w| w == b"is"), "partial event bytes leaked: {}", String::from_utf8_lossy(&out));
+        assert!(
+            !out.windows(2).any(|w| w == b"is"),
+            "partial event bytes leaked: {}",
+            String::from_utf8_lossy(&out)
+        );
         // Reassembly is valid JSON.
         let args = reassemble_openai_args(&out);
         assert_eq!(args, r#"{"city":"Par"}"#);
@@ -201,7 +210,9 @@ mod tests {
 
         let s = String::from_utf8(out.clone()).unwrap();
         let done_pos = s.find("[DONE]").expect("has DONE");
-        let repair_pos = s.find("chat.completion.chunk").expect("has a synthetic repair chunk");
+        let repair_pos = s
+            .find("chat.completion.chunk")
+            .expect("has a synthetic repair chunk");
         assert!(repair_pos < done_pos, "repair must come BEFORE [DONE]\n{s}");
         // and reassembly is valid
         let args = reassemble_openai_args(out.as_slice());

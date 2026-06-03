@@ -12,7 +12,10 @@ pub struct Frame {
 impl Frame {
     /// The `:event-type` header value, if present.
     pub fn event_type(&self) -> Option<&str> {
-        self.headers.iter().find(|(k, _)| k == ":event-type").map(|(_, v)| v.as_str())
+        self.headers
+            .iter()
+            .find(|(k, _)| k == ":event-type")
+            .map(|(_, v)| v.as_str())
     }
 }
 
@@ -61,7 +64,14 @@ pub fn parse_frame(buf: &[u8]) -> Result<Option<(Frame, usize)>, FrameError> {
     }
     let headers = parse_headers(&frame[12..12 + headers_len])?;
     let payload = frame[12 + headers_len..total_len - 4].to_vec();
-    Ok(Some((Frame { headers, payload, raw: frame.to_vec() }, total_len)))
+    Ok(Some((
+        Frame {
+            headers,
+            payload,
+            raw: frame.to_vec(),
+        },
+        total_len,
+    )))
 }
 
 fn parse_headers(mut b: &[u8]) -> Result<Vec<(String, String)>, FrameError> {
@@ -72,7 +82,9 @@ fn parse_headers(mut b: &[u8]) -> Result<Vec<(String, String)>, FrameError> {
         if b.len() < name_len + 1 {
             return Err(FrameError::Malformed);
         }
-        let name = std::str::from_utf8(&b[..name_len]).map_err(|_| FrameError::Malformed)?.to_string();
+        let name = std::str::from_utf8(&b[..name_len])
+            .map_err(|_| FrameError::Malformed)?
+            .to_string();
         b = &b[name_len..];
         let vtype = b[0];
         b = &b[1..];
@@ -93,7 +105,9 @@ fn parse_headers(mut b: &[u8]) -> Result<Vec<(String, String)>, FrameError> {
                     return Err(FrameError::Malformed);
                 }
                 if vtype == 7 {
-                    let value = std::str::from_utf8(&b[..vlen]).map_err(|_| FrameError::Malformed)?.to_string();
+                    let value = std::str::from_utf8(&b[..vlen])
+                        .map_err(|_| FrameError::Malformed)?
+                        .to_string();
                     out.push((name, value));
                 }
                 b = &b[vlen..];
@@ -141,7 +155,10 @@ mod tests {
     #[test]
     fn build_then_parse_round_trips() {
         let raw = build_frame(
-            &[(":event-type", "contentBlockDelta"), (":content-type", "application/json")],
+            &[
+                (":event-type", "contentBlockDelta"),
+                (":content-type", "application/json"),
+            ],
             br#"{"x":1}"#,
         );
         let (frame, consumed) = parse_frame(&raw).unwrap().expect("a complete frame");

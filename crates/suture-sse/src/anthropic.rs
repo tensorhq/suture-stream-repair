@@ -46,7 +46,11 @@ impl DeltaExtractor for Anthropic {
     fn is_terminator(&self, data: &[u8]) -> bool {
         serde_json::from_slice::<Value>(data)
             .ok()
-            .and_then(|v| v.get("type").and_then(Value::as_str).map(|s| s == "message_stop"))
+            .and_then(|v| {
+                v.get("type")
+                    .and_then(Value::as_str)
+                    .map(|s| s == "message_stop")
+            })
             .unwrap_or(false)
     }
 
@@ -55,18 +59,24 @@ impl DeltaExtractor for Anthropic {
         use crate::target::TargetKind;
         let mut out = String::new();
         for r in repairs {
-            let TargetKind::Block { index } = r.kind else { continue };
+            let TargetKind::Block { index } = r.kind else {
+                continue;
+            };
             let esc = json_escape(&r.append);
             out.push_str("event: content_block_delta\n");
             out.push_str(&format!(
                 "data: {{\"type\":\"content_block_delta\",\"index\":{index},\"delta\":{{\"type\":\"input_json_delta\",\"partial_json\":\"{esc}\"}}}}\n\n"
             ));
             out.push_str("event: content_block_stop\n");
-            out.push_str(&format!("data: {{\"type\":\"content_block_stop\",\"index\":{index}}}\n\n"));
+            out.push_str(&format!(
+                "data: {{\"type\":\"content_block_stop\",\"index\":{index}}}\n\n"
+            ));
         }
         if !terminated {
             out.push_str("event: message_delta\n");
-            out.push_str("data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"}}\n\n");
+            out.push_str(
+                "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"}}\n\n",
+            );
             out.push_str("event: message_stop\n");
             out.push_str("data: {\"type\":\"message_stop\"}\n\n");
         }
@@ -84,8 +94,14 @@ mod tests {
     fn extracts_input_json_delta() {
         let ext = Anthropic;
         let mut t = Targets::new();
-        ext.on_event(br#"{"type":"message_start","message":{"id":"msg_1","model":"claude-3"}}"#, &mut t);
-        ext.on_event(br#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use"}}"#, &mut t);
+        ext.on_event(
+            br#"{"type":"message_start","message":{"id":"msg_1","model":"claude-3"}}"#,
+            &mut t,
+        );
+        ext.on_event(
+            br#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use"}}"#,
+            &mut t,
+        );
         ext.on_event(br#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"x\":1"}}"#, &mut t);
         assert_eq!(t.id.as_deref(), Some("msg_1"));
         assert_eq!(t.model.as_deref(), Some("claude-3"));

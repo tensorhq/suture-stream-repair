@@ -158,8 +158,18 @@ fn is_scalar_byte(b: u8) -> bool {
     b.is_ascii_digit()
         || matches!(
             b,
-            b'-' | b'+' | b'.' | b'e' | b'E'
-                | b't' | b'r' | b'u' | b'f' | b'a' | b'l' | b's' | b'n'
+            b'-' | b'+'
+                | b'.'
+                | b'e'
+                | b'E'
+                | b't'
+                | b'r'
+                | b'u'
+                | b'f'
+                | b'a'
+                | b'l'
+                | b's'
+                | b'n'
         )
 }
 
@@ -221,10 +231,7 @@ impl StreamRepairer {
     }
 
     fn cur_drop_to(&self) -> usize {
-        self.frames
-            .last()
-            .map(|f| f.elem_drop_to)
-            .unwrap_or(0)
+        self.frames.last().map(|f| f.elem_drop_to).unwrap_or(0)
     }
 
     fn value_allowed(&self) -> bool {
@@ -421,7 +428,11 @@ impl StreamRepairer {
     /// Suited to streaming passthrough. See `AppendRepair`.
     pub fn append_repair(&self) -> AppendRepair {
         if !self.consistent {
-            return AppendRepair { consistent: false, safe: false, append: Vec::new() };
+            return AppendRepair {
+                consistent: false,
+                safe: false,
+                append: Vec::new(),
+            };
         }
         let mut append: Vec<u8> = Vec::new();
         let safe = match self.lex {
@@ -437,7 +448,11 @@ impl StreamRepairer {
             Lex::Scalar => is_valid_scalar(&self.scalar_buf),
             Lex::Between => match self.cur_pos() {
                 Pos::TopBefore => {
-                    return AppendRepair { consistent: true, safe: true, append: Vec::new() };
+                    return AppendRepair {
+                        consistent: true,
+                        safe: true,
+                        append: Vec::new(),
+                    };
                 }
                 Pos::TopAfter | Pos::ArrAfterElem | Pos::ObjAfterVal => true,
                 Pos::ArrBeforeElem | Pos::ObjBeforeKey => !self.cur_seen_member(),
@@ -445,7 +460,11 @@ impl StreamRepairer {
             },
         };
         if !safe {
-            return AppendRepair { consistent: true, safe: false, append: Vec::new() };
+            return AppendRepair {
+                consistent: true,
+                safe: false,
+                append: Vec::new(),
+            };
         }
         for f in self.frames.iter().rev() {
             append.push(match f.frame {
@@ -453,7 +472,11 @@ impl StreamRepairer {
                 Frame::Array => b']',
             });
         }
-        AppendRepair { consistent: true, safe: true, append }
+        AppendRepair {
+            consistent: true,
+            safe: true,
+            append,
+        }
     }
 
     pub fn finish(&self) -> Repair {
@@ -536,9 +559,9 @@ impl StreamRepairer {
 
 #[cfg(test)]
 mod tests {
+    use super::StreamRepairer;
     use crate::repair_str;
     use serde_json::Value;
-    use super::StreamRepairer;
 
     /// Apply an engine repair at the raw-byte level (for testing inputs that are
     /// not valid UTF-8, which `repair_str` cannot accept).
@@ -644,8 +667,10 @@ mod tests {
 
     #[test]
     fn drops_incomplete_scalar_in_array() {
-        assert_repairs(r#"{"status":"partial","payload_metrics":[250,194,"#,
-                       r#"{"status":"partial","payload_metrics":[250,194]}"#);
+        assert_repairs(
+            r#"{"status":"partial","payload_metrics":[250,194,"#,
+            r#"{"status":"partial","payload_metrics":[250,194]}"#,
+        );
         assert_repairs("[1,2,3", "[1,2]");
         assert_repairs("[1,2,", "[1,2]");
     }
@@ -674,7 +699,10 @@ mod tests {
 
     #[test]
     fn escaped_quote_does_not_close_string() {
-        assert_repairs(r#"{"a":"he said \"hi\" to me"#, r#"{"a":"he said \"hi\" to me"}"#);
+        assert_repairs(
+            r#"{"a":"he said \"hi\" to me"#,
+            r#"{"a":"he said \"hi\" to me"}"#,
+        );
     }
 
     #[test]
@@ -741,19 +769,31 @@ mod tests {
 
     #[test]
     fn append_closes_mid_string_value() {
-        assert_eq!(append_repair_str(r#"{"a":"hello wor"#).as_deref(), Some(r#"{"a":"hello wor"}"#));
+        assert_eq!(
+            append_repair_str(r#"{"a":"hello wor"#).as_deref(),
+            Some(r#"{"a":"hello wor"}"#)
+        );
     }
 
     #[test]
     fn append_keeps_complete_scalar_value() {
-        assert_eq!(append_repair_str(r#"{"count":123"#).as_deref(), Some(r#"{"count":123}"#));
+        assert_eq!(
+            append_repair_str(r#"{"count":123"#).as_deref(),
+            Some(r#"{"count":123}"#)
+        );
         assert_eq!(append_repair_str("[1,2,3").as_deref(), Some("[1,2,3]"));
-        assert_eq!(append_repair_str("[true,false").as_deref(), Some("[true,false]"));
+        assert_eq!(
+            append_repair_str("[true,false").as_deref(),
+            Some("[true,false]")
+        );
     }
 
     #[test]
     fn append_closes_nested() {
-        assert_eq!(append_repair_str(r#"{"a":["x",{"b":"c"#).as_deref(), Some(r#"{"a":["x",{"b":"c"}]}"#));
+        assert_eq!(
+            append_repair_str(r#"{"a":["x",{"b":"c"#).as_deref(),
+            Some(r#"{"a":["x",{"b":"c"}]}"#)
+        );
     }
 
     #[test]

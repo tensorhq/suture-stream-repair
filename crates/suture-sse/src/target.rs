@@ -34,7 +34,10 @@ impl TargetState {
 
     fn feed(&mut self, bytes: &[u8]) {
         if self.first_byte.is_none() {
-            if let Some(&b) = bytes.iter().find(|&&b| !matches!(b, b' ' | b'\t' | b'\n' | b'\r')) {
+            if let Some(&b) = bytes
+                .iter()
+                .find(|&&b| !matches!(b, b' ' | b'\t' | b'\n' | b'\r'))
+            {
                 self.first_byte = Some(b);
                 self.json_like = matches!(b, b'{' | b'[');
             }

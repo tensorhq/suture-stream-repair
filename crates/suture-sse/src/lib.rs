@@ -13,6 +13,7 @@ mod target;
 
 pub use anthropic::Anthropic;
 pub use converse::{eventstream_repair_stream, EventStreamRepairer};
+pub use eventstream::{build_frame, parse_frame, Frame, FrameError};
 pub use extractor::{DeltaExtractor, Repair};
 pub use gemini::Gemini;
 pub use openai::OpenAi;
@@ -20,4 +21,3 @@ pub use repairer::SseRepairer;
 pub use sse_parse::SseParser;
 pub use stream::repair_stream;
 pub use target::{TargetKind, Targets};
-pub use eventstream::{build_frame, parse_frame, Frame, FrameError};

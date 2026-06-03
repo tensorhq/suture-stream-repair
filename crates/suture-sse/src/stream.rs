@@ -68,7 +68,9 @@ mod tests {
         let mut args = String::new();
         for data in parser.push(&all) {
             if let Ok(v) = serde_json::from_slice::<Value>(&data) {
-                if let Some(a) = v["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"].as_str() {
+                if let Some(a) =
+                    v["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"].as_str()
+                {
                     args.push_str(a);
                 }
             }

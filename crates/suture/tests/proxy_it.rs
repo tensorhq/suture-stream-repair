@@ -1,6 +1,12 @@
 use std::sync::Arc;
 
-use axum::{body::Body, http::{header, HeaderMap}, response::Response, routing::post, Router};
+use axum::{
+    body::Body,
+    http::{header, HeaderMap},
+    response::Response,
+    routing::post,
+    Router,
+};
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use std::io::Write;
@@ -166,7 +172,8 @@ async fn passes_through_unknown_encoding_unchanged() {
 
 #[tokio::test]
 async fn repairs_gzip_compressed_sse_end_to_end() {
-    let up = spawn(Router::new().route("/v1/chat/completions", post(mock_gzip_truncated_sse))).await;
+    let up =
+        spawn(Router::new().route("/v1/chat/completions", post(mock_gzip_truncated_sse))).await;
     let cfg = std::sync::Arc::new(Config::from_map(|k| match k {
         "SUTURE_OPENAI_BASE" => Some(up.clone()),
         _ => None,
@@ -180,7 +187,12 @@ async fn repairs_gzip_compressed_sse_end_to_end() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.headers().get("content-encoding").map(|v| v.to_str().unwrap()), Some("gzip"));
+    assert_eq!(
+        resp.headers()
+            .get("content-encoding")
+            .map(|v| v.to_str().unwrap()),
+        Some("gzip")
+    );
     let gz = resp.bytes().await.unwrap();
 
     // gunzip (our reqwest has no auto-decompress)
@@ -191,9 +203,13 @@ async fn repairs_gzip_compressed_sse_end_to_end() {
     let mut parser = suture_sse::SseParser::new();
     let mut args = String::new();
     for data in parser.push(text.as_bytes()) {
-        if data == b"[DONE]" { continue; }
+        if data == b"[DONE]" {
+            continue;
+        }
         if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&data) {
-            if let Some(a) = v["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"].as_str() {
+            if let Some(a) =
+                v["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"].as_str()
+            {
                 args.push_str(a);
             }
         }
@@ -236,7 +252,8 @@ fn vertex_cfg(upstream: &str) -> std::sync::Arc<Config> {
 
 #[tokio::test]
 async fn vertex_claude_repaired_and_forwards_bearer() {
-    let up = spawn(Router::new().route("/v1/projects/*rest", post(mock_vertex_claude_truncated))).await;
+    let up =
+        spawn(Router::new().route("/v1/projects/*rest", post(mock_vertex_claude_truncated))).await;
     let proxy_url = spawn(proxy::app(vertex_cfg(&up))).await;
 
     let resp = reqwest::Client::new()
@@ -246,7 +263,10 @@ async fn vertex_claude_repaired_and_forwards_bearer() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.headers().get("x-seen-auth").unwrap(), "Bearer ya29.test-token");
+    assert_eq!(
+        resp.headers().get("x-seen-auth").unwrap(),
+        "Bearer ya29.test-token"
+    );
     let text = resp.text().await.unwrap();
 
     let mut parser = suture_sse::SseParser::new();
@@ -266,7 +286,8 @@ async fn vertex_claude_repaired_and_forwards_bearer() {
 
 #[tokio::test]
 async fn vertex_gemini_json_text_repaired() {
-    let up = spawn(Router::new().route("/v1/projects/*rest", post(mock_vertex_gemini_truncated))).await;
+    let up =
+        spawn(Router::new().route("/v1/projects/*rest", post(mock_vertex_gemini_truncated))).await;
     let proxy_url = spawn(proxy::app(vertex_cfg(&up))).await;
 
     let resp = reqwest::Client::new()
@@ -297,7 +318,8 @@ async fn vertex_gemini_json_text_repaired() {
 
 fn converse_delta_frame(input: &str) -> Vec<u8> {
     let payload =
-        serde_json::json!({"contentBlockIndex": 0, "delta": {"toolUse": {"input": input}}}).to_string();
+        serde_json::json!({"contentBlockIndex": 0, "delta": {"toolUse": {"input": input}}})
+            .to_string();
     suture_sse::build_frame(
         &[
             (":event-type", "contentBlockDelta"),
@@ -334,7 +356,9 @@ async fn bedrock_converse_tool_input_repaired() {
     let proxy_url = spawn(proxy::app(cfg)).await;
 
     let resp = reqwest::Client::new()
-        .post(format!("{proxy_url}/model/anthropic.claude-3/converse-stream"))
+        .post(format!(
+            "{proxy_url}/model/anthropic.claude-3/converse-stream"
+        ))
         .header("authorization", "AWS4-HMAC-SHA256 Credential=AKIA.../...")
         .body("{}")
         .send()

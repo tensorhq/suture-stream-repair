@@ -31,15 +31,33 @@ impl Config {
         );
         let vertex_enabled = get("SUTURE_VERTEX_ENABLED")
             .as_deref()
-            .map(|s| matches!(s.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+            .map(|s| {
+                matches!(
+                    s.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
             .unwrap_or(false);
         let vertex_base = get("SUTURE_VERTEX_BASE").map(&trim);
         let bedrock_enabled = get("SUTURE_BEDROCK_ENABLED")
             .as_deref()
-            .map(|s| matches!(s.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+            .map(|s| {
+                matches!(
+                    s.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
             .unwrap_or(false);
         let bedrock_base = get("SUTURE_BEDROCK_BASE").map(trim);
-        Self { listen, openai_base, anthropic_base, vertex_enabled, vertex_base, bedrock_enabled, bedrock_base }
+        Self {
+            listen,
+            openai_base,
+            anthropic_base,
+            vertex_enabled,
+            vertex_base,
+            bedrock_enabled,
+            bedrock_base,
+        }
     }
 }
 
@@ -97,11 +115,23 @@ mod tests {
     #[test]
     fn vertex_enabled_truthy_values() {
         for v in ["1", "true", "TRUE", "yes", "on"] {
-            let c = Config::from_map(|k| if k == "SUTURE_VERTEX_ENABLED" { Some(v.to_string()) } else { None });
+            let c = Config::from_map(|k| {
+                if k == "SUTURE_VERTEX_ENABLED" {
+                    Some(v.to_string())
+                } else {
+                    None
+                }
+            });
             assert!(c.vertex_enabled, "{v} should enable");
         }
         for v in ["0", "false", "no", ""] {
-            let c = Config::from_map(|k| if k == "SUTURE_VERTEX_ENABLED" { Some(v.to_string()) } else { None });
+            let c = Config::from_map(|k| {
+                if k == "SUTURE_VERTEX_ENABLED" {
+                    Some(v.to_string())
+                } else {
+                    None
+                }
+            });
             assert!(!c.vertex_enabled, "{v:?} should not enable");
         }
     }

@@ -41,7 +41,9 @@ async fn health() -> &'static str {
 }
 
 fn path_and_query(uri: &Uri) -> &str {
-    uri.path_and_query().map(|p| p.as_str()).unwrap_or(uri.path())
+    uri.path_and_query()
+        .map(|p| p.as_str())
+        .unwrap_or(uri.path())
 }
 
 async fn openai(
@@ -52,7 +54,14 @@ async fn openai(
     body: Body,
 ) -> Response {
     let url = format!("{}{}", cfg.openai_base, path_and_query(&uri));
-    proxy(url, RepairKind::Sse(Box::new(OpenAi)), method, headers, body).await
+    proxy(
+        url,
+        RepairKind::Sse(Box::new(OpenAi)),
+        method,
+        headers,
+        body,
+    )
+    .await
 }
 
 async fn anthropic(
@@ -63,7 +72,14 @@ async fn anthropic(
     body: Body,
 ) -> Response {
     let url = format!("{}{}", cfg.anthropic_base, path_and_query(&uri));
-    proxy(url, RepairKind::Sse(Box::new(Anthropic)), method, headers, body).await
+    proxy(
+        url,
+        RepairKind::Sse(Box::new(Anthropic)),
+        method,
+        headers,
+        body,
+    )
+    .await
 }
 
 async fn vertex(
@@ -75,7 +91,12 @@ async fn vertex(
 ) -> Response {
     let host = match vertex_host(&cfg, uri.path()) {
         Some(h) => h,
-        None => return text_status(StatusCode::BAD_REQUEST, "vertex: cannot derive region from path"),
+        None => {
+            return text_status(
+                StatusCode::BAD_REQUEST,
+                "vertex: cannot derive region from path",
+            )
+        }
     };
     let url = format!("{host}{}", path_and_query(&uri));
     let extractor = vertex_extractor(uri.path());
@@ -120,7 +141,12 @@ async fn bedrock(
 ) -> Response {
     let base = match bedrock_host(&cfg, &headers) {
         Some(b) => b,
-        None => return text_status(StatusCode::FORBIDDEN, "bedrock: missing or non-AWS Host header"),
+        None => {
+            return text_status(
+                StatusCode::FORBIDDEN,
+                "bedrock: missing or non-AWS Host header",
+            )
+        }
     };
     let url = format!("{base}{}", path_and_query(&uri));
     proxy(url, RepairKind::EventStreamConverse, method, headers, body).await
@@ -163,7 +189,11 @@ fn is_bedrock_host(host: &str) -> bool {
     let Some(region) = rest.strip_suffix(".amazonaws.com") else {
         return false;
     };
-    !region.is_empty() && !region.contains('.') && region.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    !region.is_empty()
+        && !region.contains('.')
+        && region
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
 async fn proxy(
@@ -242,7 +272,9 @@ async fn proxy(
 
     if ctype.starts_with("text/event-stream") {
         if let Some(extractor) = sse_extractor {
-            let raw = upstream.bytes_stream().map(|r| r.map_err(std::io::Error::other));
+            let raw = upstream
+                .bytes_stream()
+                .map(|r| r.map_err(std::io::Error::other));
             let decoded = decode_stream(raw, upstream_enc);
             let repaired = repair_stream(decoded, extractor);
             let out = encode_stream(repaired, client_enc);
@@ -258,7 +290,9 @@ async fn proxy(
                 .unwrap_or_else(|_| text_status(StatusCode::INTERNAL_SERVER_ERROR, "body error"))
         }
     } else if ctype.starts_with("application/vnd.amazon.eventstream") && want_eventstream {
-        let raw = upstream.bytes_stream().map(|r| r.map_err(std::io::Error::other));
+        let raw = upstream
+            .bytes_stream()
+            .map(|r| r.map_err(std::io::Error::other));
         let decoded = decode_stream(raw, upstream_enc);
         let repaired = eventstream_repair_stream(decoded);
         let out = encode_stream(repaired, client_enc);
@@ -280,9 +314,9 @@ async fn proxy(
                     .and_then(suture_core::repair_str)
                     .map(bytes::Bytes::from)
                     .unwrap_or_else(|| bytes::Bytes::from(buf));
-                builder
-                    .body(Body::from(out))
-                    .unwrap_or_else(|_| text_status(StatusCode::INTERNAL_SERVER_ERROR, "body error"))
+                builder.body(Body::from(out)).unwrap_or_else(|_| {
+                    text_status(StatusCode::INTERNAL_SERVER_ERROR, "body error")
+                })
             }
             Err(e) => text_status(StatusCode::BAD_GATEWAY, &format!("decode error: {e}")),
         }
@@ -376,9 +410,15 @@ mod tests {
         // q=0 means NOT acceptable -> must be dropped
         assert_eq!(pick_encoding(Some("br;q=0")), Encoding::Identity);
         assert_eq!(pick_encoding(Some("gzip, br;q=0")), Encoding::Gzip);
-        assert_eq!(pick_encoding(Some("gzip;q=0, identity")), Encoding::Identity);
+        assert_eq!(
+            pick_encoding(Some("gzip;q=0, identity")),
+            Encoding::Identity
+        );
         // whitespace / q with decimals
-        assert_eq!(pick_encoding(Some("br; q=0.0, gzip; q=0.9")), Encoding::Gzip);
+        assert_eq!(
+            pick_encoding(Some("br; q=0.0, gzip; q=0.9")),
+            Encoding::Gzip
+        );
         assert_eq!(pick_encoding(Some(" gzip ")), Encoding::Gzip);
     }
 
@@ -393,7 +433,10 @@ mod tests {
             vertex_host(&cfg, "/v1/projects/p/locations/global/publishers/anthropic/models/claude:streamRawPredict").as_deref(),
             Some("https://aiplatform.googleapis.com")
         );
-        assert_eq!(vertex_host(&cfg, "/v1/projects/p/no-region-here").as_deref(), None);
+        assert_eq!(
+            vertex_host(&cfg, "/v1/projects/p/no-region-here").as_deref(),
+            None
+        );
     }
 
     #[test]
@@ -403,7 +446,11 @@ mod tests {
             _ => None,
         });
         assert_eq!(
-            vertex_host(&cfg, "/v1/projects/p/locations/eu/publishers/google/models/g:streamGenerateContent").as_deref(),
+            vertex_host(
+                &cfg,
+                "/v1/projects/p/locations/eu/publishers/google/models/g:streamGenerateContent"
+            )
+            .as_deref(),
             Some("http://localhost:9")
         );
     }
@@ -413,29 +460,53 @@ mod tests {
         use suture_sse::{Repair, TargetKind, Targets};
         let targets = Targets::new();
 
-        let gem = vertex_extractor("/v1/projects/p/locations/us/publishers/google/models/g:streamGenerateContent");
-        let g_repairs = vec![Repair { kind: TargetKind::Content { choice: 0 }, append: b"\"}".to_vec() }];
+        let gem = vertex_extractor(
+            "/v1/projects/p/locations/us/publishers/google/models/g:streamGenerateContent",
+        );
+        let g_repairs = vec![Repair {
+            kind: TargetKind::Content { choice: 0 },
+            append: b"\"}".to_vec(),
+        }];
         let g_out = String::from_utf8(gem.synthesize(&g_repairs, &targets, false)).unwrap();
-        assert!(g_out.contains("candidates"), "google path -> Gemini: {g_out}");
+        assert!(
+            g_out.contains("candidates"),
+            "google path -> Gemini: {g_out}"
+        );
 
-        let ant = vertex_extractor("/v1/projects/p/locations/us/publishers/anthropic/models/c:streamRawPredict");
-        let a_repairs = vec![Repair { kind: TargetKind::Block { index: 0 }, append: b"}".to_vec() }];
+        let ant = vertex_extractor(
+            "/v1/projects/p/locations/us/publishers/anthropic/models/c:streamRawPredict",
+        );
+        let a_repairs = vec![Repair {
+            kind: TargetKind::Block { index: 0 },
+            append: b"}".to_vec(),
+        }];
         let a_out = String::from_utf8(ant.synthesize(&a_repairs, &targets, false)).unwrap();
-        assert!(a_out.contains("content_block_delta"), "anthropic path -> Anthropic: {a_out}");
+        assert!(
+            a_out.contains("content_block_delta"),
+            "anthropic path -> Anthropic: {a_out}"
+        );
     }
 
     #[test]
     fn bedrock_host_validates_aws_only() {
         assert!(is_bedrock_host("bedrock-runtime.us-east-1.amazonaws.com"));
-        assert!(is_bedrock_host("bedrock-runtime.eu-west-1.amazonaws.com:443"));
+        assert!(is_bedrock_host(
+            "bedrock-runtime.eu-west-1.amazonaws.com:443"
+        ));
         assert!(!is_bedrock_host("evil.com"));
         assert!(!is_bedrock_host("bedrock-runtime.evil.com.amazonaws.com"));
-        assert!(!is_bedrock_host("bedrock-runtime.us-east-1.amazonaws.com.evil.com"));
+        assert!(!is_bedrock_host(
+            "bedrock-runtime.us-east-1.amazonaws.com.evil.com"
+        ));
         assert!(!is_bedrock_host("api.openai.com"));
         assert!(!is_bedrock_host("bedrock-runtime..amazonaws.com"));
         // SSRF: embedded userinfo / URL-breaking chars must be rejected.
-        assert!(!is_bedrock_host("bedrock-runtime.x.amazonaws.com:443@attacker.com"));
-        assert!(!is_bedrock_host("bedrock-runtime.x.amazonaws.com@attacker.com"));
+        assert!(!is_bedrock_host(
+            "bedrock-runtime.x.amazonaws.com:443@attacker.com"
+        ));
+        assert!(!is_bedrock_host(
+            "bedrock-runtime.x.amazonaws.com@attacker.com"
+        ));
         assert!(!is_bedrock_host("bedrock-runtime.x.amazonaws.com/path"));
         assert!(!is_bedrock_host("bedrock-runtime.x.amazonaws.com?x"));
         assert!(!is_bedrock_host("bedrock-runtime.x.amazonaws.com#f"));
@@ -452,11 +523,20 @@ mod tests {
             _ => None,
         });
         let mut h = HeaderMap::new();
-        h.insert(header::HOST, "bedrock-runtime.us-east-1.amazonaws.com".parse().unwrap());
-        assert_eq!(bedrock_host(&cfg, &h).as_deref(), Some("http://localhost:7"));
+        h.insert(
+            header::HOST,
+            "bedrock-runtime.us-east-1.amazonaws.com".parse().unwrap(),
+        );
+        assert_eq!(
+            bedrock_host(&cfg, &h).as_deref(),
+            Some("http://localhost:7")
+        );
 
         let cfg2 = Config::from_map(|_| None);
-        assert_eq!(bedrock_host(&cfg2, &h).as_deref(), Some("https://bedrock-runtime.us-east-1.amazonaws.com"));
+        assert_eq!(
+            bedrock_host(&cfg2, &h).as_deref(),
+            Some("https://bedrock-runtime.us-east-1.amazonaws.com")
+        );
         let bad = HeaderMap::new();
         assert_eq!(bedrock_host(&cfg2, &bad), None);
     }

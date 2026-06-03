@@ -56,15 +56,15 @@ where
     use tokio_util::io::{ReaderStream, StreamReader};
     match enc {
         Encoding::Identity | Encoding::Unknown => Box::pin(s),
-        Encoding::Gzip => {
-            Box::pin(ReaderStream::new(bufread::GzipDecoder::new(StreamReader::new(s))))
-        }
-        Encoding::Brotli => {
-            Box::pin(ReaderStream::new(bufread::BrotliDecoder::new(StreamReader::new(s))))
-        }
-        Encoding::Deflate => {
-            Box::pin(ReaderStream::new(bufread::ZlibDecoder::new(StreamReader::new(s))))
-        }
+        Encoding::Gzip => Box::pin(ReaderStream::new(bufread::GzipDecoder::new(
+            StreamReader::new(s),
+        ))),
+        Encoding::Brotli => Box::pin(ReaderStream::new(bufread::BrotliDecoder::new(
+            StreamReader::new(s),
+        ))),
+        Encoding::Deflate => Box::pin(ReaderStream::new(bufread::ZlibDecoder::new(
+            StreamReader::new(s),
+        ))),
     }
 }
 
@@ -74,7 +74,11 @@ where
 struct SharedSink(Arc<Mutex<Vec<u8>>>);
 
 impl tokio::io::AsyncWrite for SharedSink {
-    fn poll_write(self: Pin<&mut Self>, _: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
         self.0.lock().unwrap().extend_from_slice(buf);
         Poll::Ready(Ok(buf.len()))
     }
@@ -100,15 +104,27 @@ where
         Encoding::Identity | Encoding::Unknown => Box::pin(s),
         Encoding::Gzip => {
             let buf = Arc::new(Mutex::new(Vec::new()));
-            encode_with(GzipEncoder::with_quality(SharedSink(buf.clone()), Level::Default), s, buf)
+            encode_with(
+                GzipEncoder::with_quality(SharedSink(buf.clone()), Level::Default),
+                s,
+                buf,
+            )
         }
         Encoding::Brotli => {
             let buf = Arc::new(Mutex::new(Vec::new()));
-            encode_with(BrotliEncoder::with_quality(SharedSink(buf.clone()), Level::Fastest), s, buf)
+            encode_with(
+                BrotliEncoder::with_quality(SharedSink(buf.clone()), Level::Fastest),
+                s,
+                buf,
+            )
         }
         Encoding::Deflate => {
             let buf = Arc::new(Mutex::new(Vec::new()));
-            encode_with(ZlibEncoder::with_quality(SharedSink(buf.clone()), Level::Default), s, buf)
+            encode_with(
+                ZlibEncoder::with_quality(SharedSink(buf.clone()), Level::Default),
+                s,
+                buf,
+            )
         }
     }
 }
@@ -253,7 +269,10 @@ mod tests {
     async fn encoder_flushes_per_chunk() {
         let parts: Vec<&[u8]> = vec![b"first ", b"second ", b"third"];
         let input = futures::stream::iter(
-            parts.iter().map(|p| Ok(Bytes::copy_from_slice(p))).collect::<Vec<_>>(),
+            parts
+                .iter()
+                .map(|p| Ok(Bytes::copy_from_slice(p)))
+                .collect::<Vec<_>>(),
         );
         let encoded = encode_stream(Box::pin(input), Encoding::Gzip);
         futures::pin_mut!(encoded);
