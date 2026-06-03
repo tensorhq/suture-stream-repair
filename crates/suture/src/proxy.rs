@@ -110,7 +110,9 @@ fn vertex_host(cfg: &Config, path: &str) -> Option<String> {
         return Some(base.clone());
     }
     let region = path.split('/').skip_while(|s| *s != "locations").nth(1)?;
-    if region.is_empty() {
+    // Validate: a single DNS label — no dots, no @, no whitespace, no underscores.
+    // This prevents userinfo/host injection when the region is interpolated into the URL.
+    if region.is_empty() || !region.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
         return None;
     }
     if region == "global" {
@@ -513,6 +515,25 @@ mod tests {
         assert!(!is_bedrock_host("bedrock-runtime.x.amazonaws.com:notaport"));
         // a plain numeric port is still fine:
         assert!(is_bedrock_host("bedrock-runtime.x.amazonaws.com:443"));
+    }
+
+    #[test]
+    fn vertex_host_rejects_crafted_region() {
+        let cfg = Config::from_map(|_| None);
+        // userinfo / host-injection attempts in the region segment must be rejected
+        assert_eq!(vertex_host(&cfg, "/v1/projects/p/locations/x@evil.com/publishers/google/models/g:streamGenerateContent"), None);
+        assert_eq!(vertex_host(&cfg, "/v1/projects/p/locations/e.evil.com/publishers/google/models/g:x"), None);
+        assert_eq!(vertex_host(&cfg, "/v1/projects/p/locations/a_b/publishers/google/models/g:x"), None); // underscore not allowed
+        assert_eq!(vertex_host(&cfg, "/v1/projects/p/locations/ /publishers/google/models/g:x"), None);
+        // valid regions still work
+        assert_eq!(
+            vertex_host(&cfg, "/v1/projects/p/locations/us-central1/publishers/google/models/g:streamGenerateContent").as_deref(),
+            Some("https://us-central1-aiplatform.googleapis.com")
+        );
+        assert_eq!(
+            vertex_host(&cfg, "/v1/projects/p/locations/global/publishers/anthropic/models/c:streamRawPredict").as_deref(),
+            Some("https://aiplatform.googleapis.com")
+        );
     }
 
     #[test]
