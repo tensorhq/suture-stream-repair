@@ -295,6 +295,95 @@ async fn vertex_gemini_json_text_repaired() {
     serde_json::from_str::<serde_json::Value>(&content).expect("repaired text must parse");
 }
 
+fn converse_delta_frame(input: &str) -> Vec<u8> {
+    let payload =
+        serde_json::json!({"contentBlockIndex": 0, "delta": {"toolUse": {"input": input}}}).to_string();
+    suture_sse::build_frame(
+        &[
+            (":event-type", "contentBlockDelta"),
+            (":content-type", "application/json"),
+            (":message-type", "event"),
+        ],
+        payload.as_bytes(),
+    )
+}
+
+async fn mock_bedrock_truncated(headers: axum::http::HeaderMap) -> Response {
+    let auth = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let body = converse_delta_frame(r#"{"city":"Par"#);
+    Response::builder()
+        .status(200)
+        .header(header::CONTENT_TYPE, "application/vnd.amazon.eventstream")
+        .header("x-seen-auth", auth)
+        .body(Body::from(body))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn bedrock_converse_tool_input_repaired() {
+    let up = spawn(Router::new().route("/model/*rest", post(mock_bedrock_truncated))).await;
+    let cfg = std::sync::Arc::new(Config::from_map(|k| match k {
+        "SUTURE_BEDROCK_ENABLED" => Some("1".to_string()),
+        "SUTURE_BEDROCK_BASE" => Some(up.clone()),
+        _ => None,
+    }));
+    let proxy_url = spawn(proxy::app(cfg)).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("{proxy_url}/model/anthropic.claude-3/converse-stream"))
+        .header("authorization", "AWS4-HMAC-SHA256 Credential=AKIA.../...")
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    assert!(resp
+        .headers()
+        .get("x-seen-auth")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .starts_with("AWS4-HMAC-SHA256"));
+    let bytes = resp.bytes().await.unwrap();
+
+    let mut input = String::new();
+    let mut off = 0;
+    while let Ok(Some((frame, consumed))) = suture_sse::parse_frame(&bytes[off..]) {
+        if frame.event_type() == Some("contentBlockDelta") {
+            let v: serde_json::Value = serde_json::from_slice(&frame.payload).unwrap();
+            if let Some(s) = v["delta"]["toolUse"]["input"].as_str() {
+                input.push_str(s);
+            }
+        }
+        off += consumed;
+        if off >= bytes.len() {
+            break;
+        }
+    }
+    assert_eq!(input, r#"{"city":"Par"}"#);
+    serde_json::from_str::<serde_json::Value>(&input).expect("repaired tool input must parse");
+}
+
+#[tokio::test]
+async fn bedrock_rejects_non_aws_host() {
+    let cfg = std::sync::Arc::new(Config::from_map(|k| match k {
+        "SUTURE_BEDROCK_ENABLED" => Some("1".to_string()),
+        _ => None,
+    }));
+    let proxy_url = spawn(proxy::app(cfg)).await;
+    let resp = reqwest::Client::new()
+        .post(format!("{proxy_url}/model/x/converse-stream"))
+        .header("host", "evil.example.com")
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+}
+
 #[tokio::test]
 async fn health_returns_ok() {
     let cfg = std::sync::Arc::new(Config::from_map(|_| None));
