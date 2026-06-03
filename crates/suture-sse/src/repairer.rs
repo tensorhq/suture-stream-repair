@@ -70,24 +70,34 @@ impl SseRepairer {
             // Hold everything after the terminator (don't forward).
             return Bytes::new();
         }
-        let mut forward: Vec<u8> = Vec::new();
-        while let Some(end) = next_event_boundary(&self.buf) {
-            let event: Vec<u8> = self.buf.drain(..end).collect();
-            let data = Self::event_data(&event);
+        let mut pos = 0usize;
+        let mut forward_end = 0usize;
+        while let Some(rel_end) = next_event_boundary(&self.buf[pos..]) {
+            let start = pos;
+            let end = pos + rel_end;
+            let data = Self::event_data(&self.buf[start..end]);
             let is_term = data
                 .as_deref()
                 .map(|d| self.extractor.is_terminator(d))
                 .unwrap_or(false);
             if is_term {
+                // forward complete events before the terminator; hold the terminator;
+                // discard everything after it.
+                let forward = self.buf[..start].to_vec();
+                self.held_terminator = self.buf[start..end].to_vec();
                 self.terminated = true;
-                self.held_terminator = event;
-                break;
+                self.buf.clear();
+                return Bytes::from(forward);
             }
             if let Some(d) = data {
                 self.extractor.on_event(&d, &mut self.targets);
             }
-            forward.extend_from_slice(&event);
+            pos = end;
+            forward_end = end;
         }
+        // forward the complete events; keep the incomplete trailing event in `buf`.
+        let forward = self.buf[..forward_end].to_vec();
+        self.buf.drain(..forward_end);
         Bytes::from(forward)
     }
 
@@ -109,10 +119,14 @@ impl SseRepairer {
             }
         }
         // `synthesize` emits a terminator only when `terminated` is false.
+        let targets = std::mem::take(&mut self.targets);
         let mut out = self
             .extractor
-            .synthesize(&repairs, &self.targets, self.terminated);
-        out.extend_from_slice(&self.held_terminator);
+            .synthesize(&repairs, &targets, self.terminated);
+        out.extend_from_slice(&std::mem::take(&mut self.held_terminator));
+        // Mark as terminated so a second call to finish produces nothing
+        // (synthesize won't emit [DONE] and held_terminator is already empty).
+        self.terminated = true;
         Bytes::from(out)
     }
 }
@@ -218,6 +232,28 @@ mod tests {
         let args = reassemble_openai_args(out.as_slice());
         assert_eq!(args, r#"{"k":"v"}"#);
         serde_json::from_str::<Value>(&args).unwrap();
+    }
+
+    #[test]
+    fn many_events_in_one_push_forward_correctly() {
+        // a large single push of N complete events must forward them all verbatim (O(N) correctness)
+        let mut input = String::new();
+        for i in 0..200 {
+            input.push_str(&format!("data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"content\":\"{i}\"}}}}]}}\n\n"));
+        }
+        let mut r = SseRepairer::new(Box::new(crate::OpenAi));
+        let out = r.push(input.as_bytes());
+        assert_eq!(&out[..], input.as_bytes(), "all complete events forwarded verbatim");
+    }
+
+    #[test]
+    fn finish_is_idempotent() {
+        let mut r = SseRepairer::new(Box::new(crate::OpenAi));
+        r.push(b"data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"x\\\":1\"}}]}}]}\n\n");
+        let first = r.finish();
+        let second = r.finish();
+        assert!(!first.is_empty());
+        assert!(second.is_empty(), "second finish must not re-emit");
     }
 
     #[test]

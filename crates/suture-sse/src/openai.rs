@@ -62,10 +62,9 @@ impl DeltaExtractor for OpenAi {
     }
 
     fn is_terminator(&self, data: &[u8]) -> bool {
-        data.iter()
-            .copied()
-            .filter(|b| !matches!(b, b' ' | b'\t' | b'\n' | b'\r'))
-            .eq(*b"[DONE]")
+        let start = data.iter().position(|b| !b.is_ascii_whitespace()).unwrap_or(data.len());
+        let end = data.iter().rposition(|b| !b.is_ascii_whitespace()).map_or(0, |i| i + 1);
+        &data[start..end] == b"[DONE]"
     }
 
     fn synthesize(&self, repairs: &[Repair], targets: &Targets, terminated: bool) -> Vec<u8> {
@@ -127,6 +126,13 @@ mod tests {
         let ext = OpenAi;
         assert!(ext.is_terminator(b"[DONE]"));
         assert!(!ext.is_terminator(br#"{"choices":[]}"#));
+    }
+
+    #[test]
+    fn terminator_ignores_only_surrounding_whitespace() {
+        let ext = OpenAi;
+        assert!(ext.is_terminator(b"  [DONE]\n"));
+        assert!(!ext.is_terminator(b"[DO NE]"));
     }
 
     #[test]
