@@ -141,9 +141,22 @@ fn bedrock_host(cfg: &Config, headers: &HeaderMap) -> Option<String> {
 }
 
 /// True if `host` is `bedrock-runtime.{region}.amazonaws.com` (single-label region),
-/// optionally with a port. Anchors the upstream to AWS — no open proxy.
+/// optionally with a numeric port. Anchors the upstream to AWS — no open proxy.
 fn is_bedrock_host(host: &str) -> bool {
-    let h = host.split(':').next().unwrap_or(host);
+    // Reject anything that could break out of the host position of a URL
+    // (userinfo `@`, path `/`, query `?`, fragment `#`, backslash, whitespace).
+    if host.contains(|c: char| matches!(c, '@' | '/' | '?' | '#' | '\\') || c.is_whitespace()) {
+        return false;
+    }
+    // Strip a trailing `:port` only when the part after the last colon is all digits;
+    // any other `:` content is rejected.
+    let h = match host.rsplit_once(':') {
+        Some((hostpart, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => {
+            hostpart
+        }
+        Some(_) => return false,
+        None => host,
+    };
     let Some(rest) = h.strip_prefix("bedrock-runtime.") else {
         return false;
     };
@@ -420,6 +433,15 @@ mod tests {
         assert!(!is_bedrock_host("bedrock-runtime.us-east-1.amazonaws.com.evil.com"));
         assert!(!is_bedrock_host("api.openai.com"));
         assert!(!is_bedrock_host("bedrock-runtime..amazonaws.com"));
+        // SSRF: embedded userinfo / URL-breaking chars must be rejected.
+        assert!(!is_bedrock_host("bedrock-runtime.x.amazonaws.com:443@attacker.com"));
+        assert!(!is_bedrock_host("bedrock-runtime.x.amazonaws.com@attacker.com"));
+        assert!(!is_bedrock_host("bedrock-runtime.x.amazonaws.com/path"));
+        assert!(!is_bedrock_host("bedrock-runtime.x.amazonaws.com?x"));
+        assert!(!is_bedrock_host("bedrock-runtime.x.amazonaws.com#f"));
+        assert!(!is_bedrock_host("bedrock-runtime.x.amazonaws.com:notaport"));
+        // a plain numeric port is still fine:
+        assert!(is_bedrock_host("bedrock-runtime.x.amazonaws.com:443"));
     }
 
     #[test]
