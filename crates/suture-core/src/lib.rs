@@ -21,13 +21,16 @@ pub fn repair_str(input: &str) -> Option<String> {
     let keep = input.len() - rep.drop_trailing;
     let mut out = input.as_bytes()[..keep].to_vec();
     out.extend_from_slice(&rep.append);
-    Some(String::from_utf8(out).expect("repair lands on UTF-8 boundaries"))
+    // If the repair somehow left invalid UTF-8 (only reachable via malformed input on the
+    // raw byte API), report inconsistency rather than panicking.
+    String::from_utf8(out).ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::Value;
+    use proptest::prelude::*;
 
     fn corpus() -> Vec<&'static str> {
         vec![
@@ -76,6 +79,21 @@ mod tests {
                     });
                 }
                 // A `None` result (inconsistent) is acceptable: caller passes through.
+            }
+        }
+    }
+
+    proptest! {
+        /// The core invariant: for any input that begins with `{` or `[`, if `repair_str`
+        /// reports success, the output MUST parse as JSON. The alphabet deliberately includes
+        /// control chars, backslash escapes, and structural punctuation.
+        #[test]
+        fn repaired_container_input_always_parses(s in r#"[\{\[]([a-z0-9 "\\/:,\{\}\[\]\t\n-]{0,40})"#) {
+            if let Some(out) = repair_str(&s) {
+                prop_assert!(
+                    serde_json::from_str::<serde_json::Value>(&out).is_ok(),
+                    "input {:?} -> {:?} did not parse", s, out
+                );
             }
         }
     }

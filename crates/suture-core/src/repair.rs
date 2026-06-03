@@ -196,8 +196,19 @@ impl StreamRepairer {
 
     /// Track multibyte UTF-8 progress for raw bytes inside a string.
     fn track_utf8(&mut self, b: u8) {
-        if b < 0x80 {
-            self.str_incomplete = 0;
+        let is_cont = (0x80..=0xBF).contains(&b);
+        if self.str_incomplete > 0 {
+            // expecting a continuation byte
+            if !is_cont {
+                self.consistent = false;
+                return;
+            }
+            self.str_incomplete += 1;
+            if self.str_incomplete >= self.str_char_len {
+                self.str_incomplete = 0;
+            }
+        } else if b < 0x80 {
+            // ASCII — fine, on a boundary
         } else if b >= 0xC0 {
             // lead byte
             self.str_char_len = if b >= 0xF0 {
@@ -209,13 +220,8 @@ impl StreamRepairer {
             };
             self.str_incomplete = 1;
         } else {
-            // continuation byte (0x80..=0xBF)
-            if self.str_incomplete > 0 {
-                self.str_incomplete += 1;
-                if self.str_incomplete >= self.str_char_len {
-                    self.str_incomplete = 0;
-                }
-            }
+            // stray continuation byte with no lead
+            self.consistent = false;
         }
     }
 
@@ -257,10 +263,24 @@ impl StreamRepairer {
                     self.lex = Lex::Between;
                     self.complete_string();
                 }
-                _ => self.track_utf8(b),
+                _ => {
+                    if b < 0x20 {
+                        // raw control characters are not allowed unescaped in JSON strings
+                        self.consistent = false;
+                        return;
+                    }
+                    self.track_utf8(b);
+                }
             },
             Lex::StrEsc => {
-                self.lex = if b == b'u' { Lex::StrU(0) } else { Lex::Str };
+                self.lex = match b {
+                    b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => Lex::Str,
+                    b'u' => Lex::StrU(0),
+                    _ => {
+                        self.consistent = false;
+                        return;
+                    }
+                };
             }
             Lex::StrU(n) => {
                 if is_hex(b) {
@@ -829,5 +849,25 @@ mod tests {
         r.push("[}".as_bytes());
         let ar = r.append_repair();
         assert!(!ar.consistent);
+    }
+
+    #[test]
+    fn rejects_raw_control_char_in_string() {
+        // a literal newline (0x0A) inside a string is malformed JSON -> inconsistent
+        assert_eq!(crate::repair_str("{\"a\":\"li\nne"), None);
+        assert_eq!(crate::repair_str("{\"a\":\"x\u{0001}"), None);
+    }
+
+    #[test]
+    fn rejects_invalid_escape() {
+        assert_eq!(crate::repair_str(r#"{"a":"x\q"#), None);
+        assert_eq!(crate::repair_str(r#"["a\,b"#), None);
+    }
+
+    #[test]
+    fn valid_escapes_and_multibyte_still_repair() {
+        // sanity: legal escapes and real UTF-8 still work
+        assert_eq!(crate::repair_str(r#"{"a":"tab\tnewline\n"#).as_deref(), Some(r#"{"a":"tab\tnewline\n"}"#));
+        assert_eq!(crate::repair_str("{\"a\":\"caf\u{00e9}").as_deref(), Some("{\"a\":\"caf\u{00e9}\"}"));
     }
 }
