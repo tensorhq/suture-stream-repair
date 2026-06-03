@@ -8,6 +8,8 @@ pub struct Config {
     pub anthropic_base: String,
     pub vertex_enabled: bool,
     pub vertex_base: Option<String>,
+    pub bedrock_enabled: bool,
+    pub bedrock_base: Option<String>,
 }
 
 impl Config {
@@ -31,8 +33,13 @@ impl Config {
             .as_deref()
             .map(|s| matches!(s.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
             .unwrap_or(false);
-        let vertex_base = get("SUTURE_VERTEX_BASE").map(trim);
-        Self { listen, openai_base, anthropic_base, vertex_enabled, vertex_base }
+        let vertex_base = get("SUTURE_VERTEX_BASE").map(&trim);
+        let bedrock_enabled = get("SUTURE_BEDROCK_ENABLED")
+            .as_deref()
+            .map(|s| matches!(s.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(false);
+        let bedrock_base = get("SUTURE_BEDROCK_BASE").map(trim);
+        Self { listen, openai_base, anthropic_base, vertex_enabled, vertex_base, bedrock_enabled, bedrock_base }
     }
 }
 
@@ -97,5 +104,23 @@ mod tests {
             let c = Config::from_map(|k| if k == "SUTURE_VERTEX_ENABLED" { Some(v.to_string()) } else { None });
             assert!(!c.vertex_enabled, "{v:?} should not enable");
         }
+    }
+
+    #[test]
+    fn bedrock_disabled_by_default() {
+        let c = Config::from_map(|_| None);
+        assert!(!c.bedrock_enabled);
+        assert_eq!(c.bedrock_base, None);
+    }
+
+    #[test]
+    fn bedrock_enabled_and_base_from_env() {
+        let c = Config::from_map(|k| match k {
+            "SUTURE_BEDROCK_ENABLED" => Some("true".to_string()),
+            "SUTURE_BEDROCK_BASE" => Some("http://localhost:7/".to_string()),
+            _ => None,
+        });
+        assert!(c.bedrock_enabled);
+        assert_eq!(c.bedrock_base.as_deref(), Some("http://localhost:7"));
     }
 }
