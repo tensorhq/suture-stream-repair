@@ -11,6 +11,7 @@ use axum::{
     Router,
 };
 use std::sync::Arc;
+use std::time::Duration;
 use suture_sse::{
     eventstream_repair_stream, repair_stream, Anthropic, DeltaExtractor, Gemini, OpenAi,
 };
@@ -21,19 +22,33 @@ enum RepairKind {
     EventStreamConverse,
 }
 
+#[derive(Clone)]
+struct AppState {
+    cfg: Arc<Config>,
+    client: reqwest::Client,
+}
+
 /// Build the proxy router.
 pub fn app(cfg: Arc<Config>) -> Router {
+    // One shared client. connect_timeout guards a dead upstream; read_timeout guards a
+    // hung connection between chunks WITHOUT killing a slow-but-live token stream.
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .read_timeout(Duration::from_secs(120))
+        .build()
+        .expect("failed to build reqwest client");
+    let state = AppState { cfg, client };
     let mut router = Router::new()
         .route("/v1/chat/completions", post(openai))
         .route("/v1/messages", post(anthropic))
         .route("/health", get(health));
-    if cfg.vertex_enabled {
+    if state.cfg.vertex_enabled {
         router = router.route("/v1/projects/*rest", post(vertex));
     }
-    if cfg.bedrock_enabled {
+    if state.cfg.bedrock_enabled {
         router = router.route("/model/*rest", post(bedrock));
     }
-    router.with_state(cfg)
+    router.with_state(state)
 }
 
 async fn health() -> &'static str {
@@ -47,14 +62,15 @@ fn path_and_query(uri: &Uri) -> &str {
 }
 
 async fn openai(
-    State(cfg): State<Arc<Config>>,
+    State(state): State<AppState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
     body: Body,
 ) -> Response {
-    let url = format!("{}{}", cfg.openai_base, path_and_query(&uri));
+    let url = format!("{}{}", state.cfg.openai_base, path_and_query(&uri));
     proxy(
+        state.client,
         url,
         RepairKind::Sse(Box::new(OpenAi)),
         method,
@@ -65,14 +81,15 @@ async fn openai(
 }
 
 async fn anthropic(
-    State(cfg): State<Arc<Config>>,
+    State(state): State<AppState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
     body: Body,
 ) -> Response {
-    let url = format!("{}{}", cfg.anthropic_base, path_and_query(&uri));
+    let url = format!("{}{}", state.cfg.anthropic_base, path_and_query(&uri));
     proxy(
+        state.client,
         url,
         RepairKind::Sse(Box::new(Anthropic)),
         method,
@@ -83,13 +100,13 @@ async fn anthropic(
 }
 
 async fn vertex(
-    State(cfg): State<Arc<Config>>,
+    State(state): State<AppState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
     body: Body,
 ) -> Response {
-    let host = match vertex_host(&cfg, uri.path()) {
+    let host = match vertex_host(&state.cfg, uri.path()) {
         Some(h) => h,
         None => {
             return text_status(
@@ -100,7 +117,7 @@ async fn vertex(
     };
     let url = format!("{host}{}", path_and_query(&uri));
     let extractor = vertex_extractor(uri.path());
-    proxy(url, RepairKind::Sse(extractor), method, headers, body).await
+    proxy(state.client, url, RepairKind::Sse(extractor), method, headers, body).await
 }
 
 /// Derive the Vertex upstream host from the request path's `locations/{region}`
@@ -135,13 +152,13 @@ fn vertex_extractor(path: &str) -> Box<dyn DeltaExtractor> {
 }
 
 async fn bedrock(
-    State(cfg): State<Arc<Config>>,
+    State(state): State<AppState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
     body: Body,
 ) -> Response {
-    let base = match bedrock_host(&cfg, &headers) {
+    let base = match bedrock_host(&state.cfg, &headers) {
         Some(b) => b,
         None => {
             return text_status(
@@ -151,7 +168,7 @@ async fn bedrock(
         }
     };
     let url = format!("{base}{}", path_and_query(&uri));
-    proxy(url, RepairKind::EventStreamConverse, method, headers, body).await
+    proxy(state.client, url, RepairKind::EventStreamConverse, method, headers, body).await
 }
 
 /// Resolve the Bedrock upstream base: the `SUTURE_BEDROCK_BASE` override, else the
@@ -198,7 +215,20 @@ fn is_bedrock_host(host: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
+/// RFC 7230 §6.1 hop-by-hop headers that must not be forwarded by a proxy.
+fn is_hop_by_hop(k: &header::HeaderName) -> bool {
+    k == header::CONNECTION
+        || k == header::TE
+        || k == header::TRAILER
+        || k == header::TRANSFER_ENCODING
+        || k == header::UPGRADE
+        || k == header::PROXY_AUTHENTICATE
+        || k == header::PROXY_AUTHORIZATION
+        || k.as_str().eq_ignore_ascii_case("keep-alive")
+}
+
 async fn proxy(
+    client: reqwest::Client,
     url: String,
     repair: RepairKind,
     method: Method,
@@ -218,10 +248,9 @@ async fn proxy(
             .and_then(|v| v.to_str().ok()),
     );
 
-    let client = reqwest::Client::new();
     let mut rb = client.request(method, &url).body(body_bytes.to_vec());
     for (k, v) in headers.iter() {
-        if k == header::HOST || k == header::CONTENT_LENGTH || k == header::CONNECTION {
+        if k == header::HOST || k == header::CONTENT_LENGTH || is_hop_by_hop(k) {
             continue;
         }
         rb = rb.header(k.as_str(), v.as_bytes());
@@ -229,7 +258,10 @@ async fn proxy(
 
     let upstream = match rb.send().await {
         Ok(r) => r,
-        Err(e) => return text_status(StatusCode::BAD_GATEWAY, &format!("upstream error: {e}")),
+        Err(e) => {
+            tracing::warn!(error = %e, %url, "upstream request failed");
+            return text_status(StatusCode::BAD_GATEWAY, &format!("upstream error: {e}"));
+        }
     };
 
     let status = upstream.status();
@@ -248,11 +280,7 @@ async fn proxy(
 
     let mut builder = Response::builder().status(status.as_u16());
     for (k, v) in upstream.headers().iter() {
-        if k == header::TRANSFER_ENCODING
-            || k == header::CONTENT_LENGTH
-            || k == header::CONNECTION
-            || k == header::CONTENT_ENCODING
-        {
+        if k == header::CONTENT_LENGTH || k == header::CONTENT_ENCODING || is_hop_by_hop(k) {
             continue;
         }
         builder = builder.header(k.as_str(), v.as_bytes());
@@ -320,7 +348,10 @@ async fn proxy(
                     text_status(StatusCode::INTERNAL_SERVER_ERROR, "body error")
                 })
             }
-            Err(e) => text_status(StatusCode::BAD_GATEWAY, &format!("decode error: {e}")),
+            Err(e) => {
+                tracing::warn!(error = %e, "upstream body decode failed");
+                text_status(StatusCode::BAD_GATEWAY, &format!("decode error: {e}"))
+            }
         }
     } else {
         if let Some(ce) = &orig_ce {
@@ -560,5 +591,23 @@ mod tests {
         );
         let bad = HeaderMap::new();
         assert_eq!(bedrock_host(&cfg2, &bad), None);
+    }
+
+    #[test]
+    fn hop_by_hop_headers_identified() {
+        assert!(is_hop_by_hop(&header::CONNECTION));
+        assert!(is_hop_by_hop(&header::TE));
+        assert!(is_hop_by_hop(&header::TRAILER));
+        assert!(is_hop_by_hop(&header::TRANSFER_ENCODING));
+        assert!(is_hop_by_hop(&header::UPGRADE));
+        assert!(is_hop_by_hop(&header::PROXY_AUTHENTICATE));
+        assert!(is_hop_by_hop(&header::PROXY_AUTHORIZATION));
+        // keep-alive is matched case-insensitively via as_str
+        let keep_alive: header::HeaderName = "keep-alive".parse().unwrap();
+        assert!(is_hop_by_hop(&keep_alive));
+        // end-to-end headers are NOT hop-by-hop
+        assert!(!is_hop_by_hop(&header::CONTENT_TYPE));
+        assert!(!is_hop_by_hop(&header::AUTHORIZATION));
+        assert!(!is_hop_by_hop(&header::ACCEPT));
     }
 }

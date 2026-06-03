@@ -29,6 +29,8 @@ bytes = "1"
 futures-util = "0.3"
 async-compression = { version = "0.4", features = ["tokio", "gzip", "brotli", "zlib"] }
 tokio-util = { version = "0.7", features = ["io"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 futures = "0.3"
