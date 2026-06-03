@@ -1,9 +1,18 @@
 [package]
-name = "suture-core"
+name = "suture-repair-core"
 version = "0.1.0"
 edition = "2021"
-description = "Byte-level JSON stream repair engine for Suture."
+rust-version = "1.75"
+description = "Byte-level JSON stream repair engine — closes truncated/malformed LLM JSON."
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/tensorhq/suture-stream-repair"
+homepage = "https://github.com/tensorhq/suture-stream-repair"
+readme = "README.md"
+keywords = ["json", "repair", "streaming", "llm", "parser"]
+categories = ["parsing", "text-processing"]
+
+[lib]
+name = "suture_core"
 
 [dev-dependencies]
 serde_json = "1"
