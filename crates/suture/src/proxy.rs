@@ -11,7 +11,15 @@ use axum::{
     Router,
 };
 use std::sync::Arc;
-use suture_sse::{repair_stream, Anthropic, DeltaExtractor, Gemini, OpenAi};
+use suture_sse::{
+    eventstream_repair_stream, repair_stream, Anthropic, DeltaExtractor, Gemini, OpenAi,
+};
+
+/// What kind of repair to apply to the upstream response.
+enum RepairKind {
+    Sse(Box<dyn DeltaExtractor>),
+    EventStreamConverse,
+}
 
 /// Build the proxy router.
 pub fn app(cfg: Arc<Config>) -> Router {
@@ -21,6 +29,9 @@ pub fn app(cfg: Arc<Config>) -> Router {
         .route("/health", get(health));
     if cfg.vertex_enabled {
         router = router.route("/v1/projects/*rest", post(vertex));
+    }
+    if cfg.bedrock_enabled {
+        router = router.route("/model/*rest", post(bedrock));
     }
     router.with_state(cfg)
 }
@@ -41,7 +52,7 @@ async fn openai(
     body: Body,
 ) -> Response {
     let url = format!("{}{}", cfg.openai_base, path_and_query(&uri));
-    proxy(url, Box::new(OpenAi), method, headers, body).await
+    proxy(url, RepairKind::Sse(Box::new(OpenAi)), method, headers, body).await
 }
 
 async fn anthropic(
@@ -52,7 +63,7 @@ async fn anthropic(
     body: Body,
 ) -> Response {
     let url = format!("{}{}", cfg.anthropic_base, path_and_query(&uri));
-    proxy(url, Box::new(Anthropic), method, headers, body).await
+    proxy(url, RepairKind::Sse(Box::new(Anthropic)), method, headers, body).await
 }
 
 async fn vertex(
@@ -68,7 +79,7 @@ async fn vertex(
     };
     let url = format!("{host}{}", path_and_query(&uri));
     let extractor = vertex_extractor(uri.path());
-    proxy(url, extractor, method, headers, body).await
+    proxy(url, RepairKind::Sse(extractor), method, headers, body).await
 }
 
 /// Derive the Vertex upstream host from the request path's `locations/{region}`
@@ -100,9 +111,51 @@ fn vertex_extractor(path: &str) -> Box<dyn DeltaExtractor> {
     }
 }
 
+async fn bedrock(
+    State(cfg): State<Arc<Config>>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let base = match bedrock_host(&cfg, &headers) {
+        Some(b) => b,
+        None => return text_status(StatusCode::FORBIDDEN, "bedrock: missing or non-AWS Host header"),
+    };
+    let url = format!("{base}{}", path_and_query(&uri));
+    proxy(url, RepairKind::EventStreamConverse, method, headers, body).await
+}
+
+/// Resolve the Bedrock upstream base: the `SUTURE_BEDROCK_BASE` override, else the
+/// request's `Host` header if it is a valid Bedrock runtime host (so SigV4 stays valid).
+fn bedrock_host(cfg: &Config, headers: &HeaderMap) -> Option<String> {
+    if let Some(base) = &cfg.bedrock_base {
+        return Some(base.clone());
+    }
+    let host = headers.get(header::HOST).and_then(|v| v.to_str().ok())?;
+    if is_bedrock_host(host) {
+        Some(format!("https://{host}"))
+    } else {
+        None
+    }
+}
+
+/// True if `host` is `bedrock-runtime.{region}.amazonaws.com` (single-label region),
+/// optionally with a port. Anchors the upstream to AWS — no open proxy.
+fn is_bedrock_host(host: &str) -> bool {
+    let h = host.split(':').next().unwrap_or(host);
+    let Some(rest) = h.strip_prefix("bedrock-runtime.") else {
+        return false;
+    };
+    let Some(region) = rest.strip_suffix(".amazonaws.com") else {
+        return false;
+    };
+    !region.is_empty() && !region.contains('.') && region.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
 async fn proxy(
     url: String,
-    extractor: Box<dyn DeltaExtractor>,
+    repair: RepairKind,
     method: Method,
     headers: HeaderMap,
     body: Body,
@@ -160,6 +213,11 @@ async fn proxy(
         builder = builder.header(k.as_str(), v.as_bytes());
     }
 
+    let (sse_extractor, want_eventstream) = match repair {
+        RepairKind::Sse(e) => (Some(e), false),
+        RepairKind::EventStreamConverse => (None, true),
+    };
+
     if upstream_enc == Encoding::Unknown {
         if let Some(ce) = &orig_ce {
             builder = builder.header(header::CONTENT_ENCODING.as_str(), ce.as_bytes());
@@ -170,11 +228,26 @@ async fn proxy(
     }
 
     if ctype.starts_with("text/event-stream") {
-        let raw = upstream
-            .bytes_stream()
-            .map(|r| r.map_err(std::io::Error::other));
+        if let Some(extractor) = sse_extractor {
+            let raw = upstream.bytes_stream().map(|r| r.map_err(std::io::Error::other));
+            let decoded = decode_stream(raw, upstream_enc);
+            let repaired = repair_stream(decoded, extractor);
+            let out = encode_stream(repaired, client_enc);
+            if let Some(ce) = client_enc.header_value() {
+                builder = builder.header(header::CONTENT_ENCODING.as_str(), ce);
+            }
+            builder
+                .body(Body::from_stream(out))
+                .unwrap_or_else(|_| text_status(StatusCode::INTERNAL_SERVER_ERROR, "body error"))
+        } else {
+            builder
+                .body(Body::from_stream(upstream.bytes_stream()))
+                .unwrap_or_else(|_| text_status(StatusCode::INTERNAL_SERVER_ERROR, "body error"))
+        }
+    } else if ctype.starts_with("application/vnd.amazon.eventstream") && want_eventstream {
+        let raw = upstream.bytes_stream().map(|r| r.map_err(std::io::Error::other));
         let decoded = decode_stream(raw, upstream_enc);
-        let repaired = repair_stream(decoded, extractor);
+        let repaired = eventstream_repair_stream(decoded);
         let out = encode_stream(repaired, client_enc);
         if let Some(ce) = client_enc.header_value() {
             builder = builder.header(header::CONTENT_ENCODING.as_str(), ce);
@@ -336,5 +409,33 @@ mod tests {
         let a_repairs = vec![Repair { kind: TargetKind::Block { index: 0 }, append: b"}".to_vec() }];
         let a_out = String::from_utf8(ant.synthesize(&a_repairs, &targets, false)).unwrap();
         assert!(a_out.contains("content_block_delta"), "anthropic path -> Anthropic: {a_out}");
+    }
+
+    #[test]
+    fn bedrock_host_validates_aws_only() {
+        assert!(is_bedrock_host("bedrock-runtime.us-east-1.amazonaws.com"));
+        assert!(is_bedrock_host("bedrock-runtime.eu-west-1.amazonaws.com:443"));
+        assert!(!is_bedrock_host("evil.com"));
+        assert!(!is_bedrock_host("bedrock-runtime.evil.com.amazonaws.com"));
+        assert!(!is_bedrock_host("bedrock-runtime.us-east-1.amazonaws.com.evil.com"));
+        assert!(!is_bedrock_host("api.openai.com"));
+        assert!(!is_bedrock_host("bedrock-runtime..amazonaws.com"));
+    }
+
+    #[test]
+    fn bedrock_host_prefers_override_then_header() {
+        use axum::http::HeaderMap;
+        let cfg = Config::from_map(|k| match k {
+            "SUTURE_BEDROCK_BASE" => Some("http://localhost:7".to_string()),
+            _ => None,
+        });
+        let mut h = HeaderMap::new();
+        h.insert(header::HOST, "bedrock-runtime.us-east-1.amazonaws.com".parse().unwrap());
+        assert_eq!(bedrock_host(&cfg, &h).as_deref(), Some("http://localhost:7"));
+
+        let cfg2 = Config::from_map(|_| None);
+        assert_eq!(bedrock_host(&cfg2, &h).as_deref(), Some("https://bedrock-runtime.us-east-1.amazonaws.com"));
+        let bad = HeaderMap::new();
+        assert_eq!(bedrock_host(&cfg2, &bad), None);
     }
 }
