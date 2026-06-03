@@ -29,8 +29,8 @@ pub fn repair_str(input: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::Value;
     use proptest::prelude::*;
+    use serde_json::Value;
 
     fn corpus() -> Vec<&'static str> {
         vec![

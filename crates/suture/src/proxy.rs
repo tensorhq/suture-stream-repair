@@ -117,7 +117,15 @@ async fn vertex(
     };
     let url = format!("{host}{}", path_and_query(&uri));
     let extractor = vertex_extractor(uri.path());
-    proxy(state.client, url, RepairKind::Sse(extractor), method, headers, body).await
+    proxy(
+        state.client,
+        url,
+        RepairKind::Sse(extractor),
+        method,
+        headers,
+        body,
+    )
+    .await
 }
 
 /// Derive the Vertex upstream host from the request path's `locations/{region}`
@@ -129,7 +137,11 @@ fn vertex_host(cfg: &Config, path: &str) -> Option<String> {
     let region = path.split('/').skip_while(|s| *s != "locations").nth(1)?;
     // Validate: a single DNS label — no dots, no @, no whitespace, no underscores.
     // This prevents userinfo/host injection when the region is interpolated into the URL.
-    if region.is_empty() || !region.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+    if region.is_empty()
+        || !region
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
         return None;
     }
     if region == "global" {
@@ -168,7 +180,15 @@ async fn bedrock(
         }
     };
     let url = format!("{base}{}", path_and_query(&uri));
-    proxy(state.client, url, RepairKind::EventStreamConverse, method, headers, body).await
+    proxy(
+        state.client,
+        url,
+        RepairKind::EventStreamConverse,
+        method,
+        headers,
+        body,
+    )
+    .await
 }
 
 /// Resolve the Bedrock upstream base: the `SUTURE_BEDROCK_BASE` override, else the
@@ -553,16 +573,38 @@ mod tests {
         let cfg = Config::from_map(|_| None);
         // userinfo / host-injection attempts in the region segment must be rejected
         assert_eq!(vertex_host(&cfg, "/v1/projects/p/locations/x@evil.com/publishers/google/models/g:streamGenerateContent"), None);
-        assert_eq!(vertex_host(&cfg, "/v1/projects/p/locations/e.evil.com/publishers/google/models/g:x"), None);
-        assert_eq!(vertex_host(&cfg, "/v1/projects/p/locations/a_b/publishers/google/models/g:x"), None); // underscore not allowed
-        assert_eq!(vertex_host(&cfg, "/v1/projects/p/locations/ /publishers/google/models/g:x"), None);
+        assert_eq!(
+            vertex_host(
+                &cfg,
+                "/v1/projects/p/locations/e.evil.com/publishers/google/models/g:x"
+            ),
+            None
+        );
+        assert_eq!(
+            vertex_host(
+                &cfg,
+                "/v1/projects/p/locations/a_b/publishers/google/models/g:x"
+            ),
+            None
+        ); // underscore not allowed
+        assert_eq!(
+            vertex_host(
+                &cfg,
+                "/v1/projects/p/locations/ /publishers/google/models/g:x"
+            ),
+            None
+        );
         // valid regions still work
         assert_eq!(
             vertex_host(&cfg, "/v1/projects/p/locations/us-central1/publishers/google/models/g:streamGenerateContent").as_deref(),
             Some("https://us-central1-aiplatform.googleapis.com")
         );
         assert_eq!(
-            vertex_host(&cfg, "/v1/projects/p/locations/global/publishers/anthropic/models/c:streamRawPredict").as_deref(),
+            vertex_host(
+                &cfg,
+                "/v1/projects/p/locations/global/publishers/anthropic/models/c:streamRawPredict"
+            )
+            .as_deref(),
             Some("https://aiplatform.googleapis.com")
         );
     }

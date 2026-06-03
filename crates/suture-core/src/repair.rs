@@ -867,7 +867,13 @@ mod tests {
     #[test]
     fn valid_escapes_and_multibyte_still_repair() {
         // sanity: legal escapes and real UTF-8 still work
-        assert_eq!(crate::repair_str(r#"{"a":"tab\tnewline\n"#).as_deref(), Some(r#"{"a":"tab\tnewline\n"}"#));
-        assert_eq!(crate::repair_str("{\"a\":\"caf\u{00e9}").as_deref(), Some("{\"a\":\"caf\u{00e9}\"}"));
+        assert_eq!(
+            crate::repair_str(r#"{"a":"tab\tnewline\n"#).as_deref(),
+            Some(r#"{"a":"tab\tnewline\n"}"#)
+        );
+        assert_eq!(
+            crate::repair_str("{\"a\":\"caf\u{00e9}").as_deref(),
+            Some("{\"a\":\"caf\u{00e9}\"}")
+        );
     }
 }

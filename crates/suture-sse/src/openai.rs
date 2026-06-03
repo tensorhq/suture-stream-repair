@@ -62,8 +62,14 @@ impl DeltaExtractor for OpenAi {
     }
 
     fn is_terminator(&self, data: &[u8]) -> bool {
-        let start = data.iter().position(|b| !b.is_ascii_whitespace()).unwrap_or(data.len());
-        let end = data.iter().rposition(|b| !b.is_ascii_whitespace()).map_or(0, |i| i + 1);
+        let start = data
+            .iter()
+            .position(|b| !b.is_ascii_whitespace())
+            .unwrap_or(data.len());
+        let end = data
+            .iter()
+            .rposition(|b| !b.is_ascii_whitespace())
+            .map_or(0, |i| i + 1);
         &data[start..end] == b"[DONE]"
     }
 

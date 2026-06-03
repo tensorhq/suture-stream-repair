@@ -239,11 +239,17 @@ mod tests {
         // a large single push of N complete events must forward them all verbatim (O(N) correctness)
         let mut input = String::new();
         for i in 0..200 {
-            input.push_str(&format!("data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"content\":\"{i}\"}}}}]}}\n\n"));
+            input.push_str(&format!(
+                "data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"content\":\"{i}\"}}}}]}}\n\n"
+            ));
         }
         let mut r = SseRepairer::new(Box::new(crate::OpenAi));
         let out = r.push(input.as_bytes());
-        assert_eq!(&out[..], input.as_bytes(), "all complete events forwarded verbatim");
+        assert_eq!(
+            &out[..],
+            input.as_bytes(),
+            "all complete events forwarded verbatim"
+        );
     }
 
     #[test]
