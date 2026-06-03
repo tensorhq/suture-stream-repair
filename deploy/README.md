@@ -70,11 +70,20 @@ Suture forwards the client's `Accept-Encoding` to the upstream, decodes the resp
 (honoring q-values) — so compression no longer prevents repair. An upstream coding Suture
 can't decode is passed through verbatim without repair (never corrupted).
 
+## AWS Bedrock
+
+Enable with `SUTURE_BEDROCK_ENABLED=1`. Point your AWS SDK / signer at Suture, but **sign
+the request for the real Bedrock host** (`bedrock-runtime.{region}.amazonaws.com`) — Suture
+derives the upstream from the (validated) `Host` header and forwards the signed request
+verbatim, so SigV4 validates at AWS. Targets `ConverseStream`
+(`/model/{id}/converse-stream`); truncated `toolUse.input` is repaired.
+
+- **Auth / security:** SigV4 transmits only a signature, never the AWS secret key, so Suture
+  holds and sees no reusable AWS credential. Suture validates the `Host` against
+  `bedrock-runtime.{region}.amazonaws.com` (no open proxy). `SUTURE_BEDROCK_BASE` overrides
+  the host for test/private endpoints.
+
 ## Not supported yet
 
-- **AWS Bedrock** as an upstream: it uses binary `application/vnd.amazon.eventstream`
-  framing, so it needs a Bedrock transport codec (a planned phase). Auth is already
-  credential-free — the client pre-signs for the real Bedrock host and Suture forwards
-  verbatim; the `suture-core` repair engine is reusable as-is.
 - **OpenAI-compatible translation** to other providers — Suture forwards each provider's
   native API; it does not translate request/response schemas.

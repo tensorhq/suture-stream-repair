@@ -11,8 +11,9 @@ JSON valid — without buffering the stream or adding meaningful latency.
 
 ## Features
 
-- Repairs **OpenAI** (`/v1/chat/completions`), **Anthropic** (`/v1/messages`), and
-  **GCP Vertex AI** (Gemini + Claude-on-Vertex) streaming responses.
+- Repairs **OpenAI** (`/v1/chat/completions`), **Anthropic** (`/v1/messages`),
+  **GCP Vertex AI** (Gemini + Claude-on-Vertex), and **AWS Bedrock** (`ConverseStream`)
+  streaming responses.
 - **SSE-aware** — repairs the *reassembled* tool-call arguments / structured content
   accumulated across delta events, not just raw wire bytes.
 - **Streaming + compressed** — transparently decodes gzip/brotli/deflate, repairs, and
@@ -37,7 +38,7 @@ client = OpenAI(base_url="http://localhost:8787/v1", api_key=os.environ["OPENAI_
 ```
 
 Routes: `POST /v1/chat/completions` → OpenAI, `POST /v1/messages` → Anthropic,
-`POST /v1/projects/*` → Vertex (when enabled), `GET /health`.
+`POST /v1/projects/*` → Vertex, `POST /model/*` → Bedrock (each when enabled), `GET /health`.
 
 ## How it works
 
@@ -63,6 +64,8 @@ Three layers, each independently tested:
 | `SUTURE_ANTHROPIC_BASE` | `https://api.anthropic.com` | Anthropic upstream |
 | `SUTURE_VERTEX_ENABLED` | `0` | enable the Vertex route (host derived from the path) |
 | `SUTURE_VERTEX_BASE` | — | optional Vertex upstream override |
+| `SUTURE_BEDROCK_ENABLED` | `0` | enable the Bedrock route (host from the validated `Host` header) |
+| `SUTURE_BEDROCK_BASE` | — | optional Bedrock upstream override |
 
 ## Deployment
 
@@ -73,8 +76,11 @@ low-latency design.
 
 ## Status
 
-OpenAI, Anthropic, and GCP Vertex AI are supported, with transparent compression handling.
-**AWS Bedrock** (binary `application/vnd.amazon.eventstream`) is planned.
+OpenAI, Anthropic, GCP Vertex AI, and **AWS Bedrock** (`ConverseStream`) are supported, with
+transparent compression handling. Bedrock uses credential-free **SigV4 passthrough** — the
+client signs for the real Bedrock host and Suture forwards verbatim, so Suture never sees a
+reusable AWS secret (the secret key never leaves the client; only a per-request signature
+transits).
 
 ## License
 
