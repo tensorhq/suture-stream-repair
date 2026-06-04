@@ -7,6 +7,8 @@
 
 **Ultra-low-latency reverse proxy that repairs truncated and malformed JSON in LLM streaming responses, on the fly.**
 
+> 📝 **The story:** [Why your LLM tool calls silently break — and a ~10µs fix](https://dev.to/wu_jiang_2ca3f4c2d1718f07/why-your-llm-tool-calls-silently-break-and-a-10us-fix-15mj)
+
 When an upstream LLM stream is cut off — by `max_tokens`, a context-window limit, or a
 dropped socket — the JSON it was emitting (a tool call's `arguments`, or structured-output
 `content`) is left unterminated, and your application throws `JSONDecodeError` /
