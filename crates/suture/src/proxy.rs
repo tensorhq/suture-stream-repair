@@ -43,7 +43,11 @@ pub fn app(cfg: Arc<Config>) -> Router {
         .route("/v1/messages", post(anthropic))
         .route("/health", get(health));
     if state.cfg.vertex_enabled {
-        router = router.route("/v1/projects/*rest", post(vertex));
+        // Vertex exposes both `v1` and `v1beta1`; the google-genai SDK defaults to
+        // `v1beta1` (it carries `thinking_config` etc.), so we must accept both.
+        router = router
+            .route("/v1/projects/*rest", post(vertex))
+            .route("/v1beta1/projects/*rest", post(vertex));
     }
     if state.cfg.bedrock_enabled {
         router = router.route("/model/*rest", post(bedrock));

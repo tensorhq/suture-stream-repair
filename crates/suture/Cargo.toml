@@ -1,6 +1,6 @@
 [package]
 name = "suture-repair"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.75"
 description = "Ultra-low latency reverse proxy that repairs truncated JSON in LLM streams."

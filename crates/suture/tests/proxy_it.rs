@@ -316,6 +316,47 @@ async fn vertex_gemini_json_text_repaired() {
     serde_json::from_str::<serde_json::Value>(&content).expect("repaired text must parse");
 }
 
+// The google-genai SDK defaults Vertex to the `v1beta1` path; Suture must intercept it too.
+#[tokio::test]
+async fn vertex_v1beta1_gemini_repaired() {
+    let up = spawn(Router::new().route(
+        "/v1beta1/projects/*rest",
+        post(mock_vertex_gemini_truncated),
+    ))
+    .await;
+    let proxy_url = spawn(proxy::app(vertex_cfg(&up))).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("{proxy_url}/v1beta1/projects/p/locations/us-central1/publishers/google/models/gemini:streamGenerateContent?alt=sse"))
+        .header("authorization", "Bearer ya29.x")
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "v1beta1 Vertex path must be routed, not 404"
+    );
+    let text = resp.text().await.unwrap();
+
+    let mut parser = suture_sse::SseParser::new();
+    let mut content = String::new();
+    for data in parser.push(text.as_bytes()) {
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&data) {
+            if let Some(parts) = v["candidates"][0]["content"]["parts"].as_array() {
+                for p in parts {
+                    if let Some(t) = p["text"].as_str() {
+                        content.push_str(t);
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(content, r#"{"city":"Par"}"#);
+    serde_json::from_str::<serde_json::Value>(&content).expect("repaired text must parse");
+}
+
 fn converse_delta_frame(input: &str) -> Vec<u8> {
     let payload =
         serde_json::json!({"contentBlockIndex": 0, "delta": {"toolUse": {"input": input}}})
