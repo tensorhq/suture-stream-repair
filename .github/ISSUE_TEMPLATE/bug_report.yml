@@ -1,0 +1,41 @@
+name: Bug report
+description: A truncated/malformed stream that isn't repaired correctly, a crash, or wrong behavior.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What did you observe vs. expect?
+    validations:
+      required: true
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Provider
+      options:
+        - OpenAI
+        - Anthropic
+        - Google Vertex AI (Gemini)
+        - Google Vertex AI (Claude)
+        - AWS Bedrock
+        - Other / N/A
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: >
+        Ideally the input (truncated stream bytes or the reassembled JSON fragment) and the
+        repaired output you got vs. the valid JSON you expected. For the engine,
+        `suture_core::repair_str("…")` is the smallest repro.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+    validations:
+      required: false

@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Suture — repair truncated JSON in LLM streams (OpenAI, Anthropic, Vertex, Bedrock)</title>
+<meta name="description" content="Suture is an ultra-low-latency reverse proxy that repairs truncated and malformed JSON in LLM streaming responses on the fly — fixing JSONDecodeError and serde_json EOF errors on truncated tool calls across OpenAI, Anthropic, Google Vertex AI, and AWS Bedrock. No SDK changes, no retries, holds no API keys.">
+<link rel="canonical" href="https://tensorhq.github.io/suture-stream-repair/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Suture — repair truncated JSON in LLM streams">
+<meta property="og:description" content="Ultra-low-latency reverse proxy that closes truncated tool-call / structured-output JSON on the wire. OpenAI, Anthropic, Vertex AI, Bedrock. Holds no keys.">
+<meta property="og:url" content="https://tensorhq.github.io/suture-stream-repair/">
+<meta property="og:image" content="https://tensorhq.github.io/suture-stream-repair/social-preview.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Suture — repair truncated JSON in LLM streams">
+<meta name="twitter:description" content="Closes truncated tool-call / structured-output JSON on the wire. OpenAI, Anthropic, Vertex, Bedrock. Holds no keys.">
+<meta name="twitter:image" content="https://tensorhq.github.io/suture-stream-repair/social-preview.png">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Suture",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "Linux, macOS, Windows",
+  "description": "Ultra-low-latency reverse proxy that repairs truncated and malformed JSON in LLM streaming responses (OpenAI, Anthropic, Google Vertex AI, AWS Bedrock).",
+  "url": "https://github.com/tensorhq/suture-stream-repair",
+  "license": "https://opensource.org/license/mit",
+  "programmingLanguage": "Rust",
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+}
+</script>
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --fg:#e6edf3; --mut:#9da7b3; --acc:#f78166; --link:#58a6ff; --br:#30363d; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--fg); }
+  a { color:var(--link); text-decoration:none; } a:hover { text-decoration:underline; }
+  .wrap { max-width:860px; margin:0 auto; padding:0 20px; }
+  header { padding:72px 0 40px; text-align:center; }
+  h1 { font-size:2.6rem; margin:0 0 .3em; letter-spacing:-.02em; }
+  .tag { font-size:1.25rem; color:var(--mut); margin:0 auto 1.6em; max-width:620px; }
+  .cta a { display:inline-block; margin:6px; padding:11px 22px; border-radius:8px; font-weight:600; }
+  .cta .primary { background:var(--acc); color:#0d1117; }
+  .cta .ghost { border:1px solid var(--br); color:var(--fg); }
+  .badges { margin-top:18px; } .badges img { height:20px; margin:0 3px; vertical-align:middle; }
+  h2 { font-size:1.5rem; margin:48px 0 14px; letter-spacing:-.01em; }
+  p { color:#c9d1d9; }
+  pre { background:var(--panel); border:1px solid var(--br); border-radius:8px; padding:16px; overflow:auto; font:13.5px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  code { font:13.5px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  .err { background:var(--panel); border:1px solid var(--br); border-left:3px solid var(--acc); border-radius:6px; padding:12px 16px; margin:10px 0; color:var(--mut); font:13px ui-monospace,monospace; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .card { background:var(--panel); border:1px solid var(--br); border-radius:8px; padding:16px; }
+  .card b { color:var(--fg); }
+  footer { margin:64px 0 40px; color:var(--mut); font-size:.9rem; text-align:center; border-top:1px solid var(--br); padding-top:24px; }
+  @media (max-width:620px){ .grid{grid-template-columns:1fr;} h1{font-size:2rem;} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Suture</h1>
+    <p class="tag">Ultra-low-latency reverse proxy that <b>repairs truncated and malformed JSON in LLM streaming responses</b>, on the fly — no SDK changes, no retries, and it holds none of your API keys.</p>
+    <div class="cta">
+      <a class="primary" href="https://github.com/tensorhq/suture-stream-repair">View on GitHub</a>
+      <a class="ghost" href="https://github.com/tensorhq/suture-stream-repair#quickstart">Quickstart</a>
+    </div>
+    <div class="badges">
+      <a href="https://github.com/tensorhq/suture-stream-repair/actions"><img alt="CI" src="https://github.com/tensorhq/suture-stream-repair/actions/workflows/ci.yml/badge.svg"></a>
+      <a href="https://crates.io/crates/suture-repair"><img alt="crates.io" src="https://img.shields.io/crates/v/suture-repair.svg"></a>
+      <img alt="License" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg">
+    </div>
+  </header>
+
+  <h2>The problem</h2>
+  <p>LLM streams don't send one JSON document — they send many delta events your SDK
+  reassembles, and the tool-call <code>arguments</code> (or structured-output <code>content</code>)
+  is only valid once the whole stream arrives. When the model hits <code>max_tokens</code>,
+  blows the context window, or the socket dies, you're left parsing this:</p>
+  <pre>{"city": "Par      <span style="color:#f78166">// ← unterminated → your parser throws</span></pre>
+  <p>If you've seen any of these, Suture is for you:</p>
+  <div class="err">json.decoder.JSONDecodeError: Unterminated string starting at: line 1 column …</div>
+  <div class="err">json.decoder.JSONDecodeError: Expecting value: line 1 column … (char …)</div>
+  <div class="err">serde_json::Error: EOF while parsing a string / an object</div>
+
+  <h2>The fix</h2>
+  <p>Suture sits between your app and the provider, watches the stream, and emits exactly the
+  characters needed to close the reassembled JSON — as a final, well-formed delta before the
+  terminator. Your client reassembles valid JSON and never knows anything was wrong. Added
+  overhead is ~10&nbsp;µs of CPU per chunk.</p>
+  <pre>from openai import OpenAI
+client = OpenAI(base_url="http://localhost:8787/v1", api_key=os.environ["OPENAI_API_KEY"])
+<span style="color:#9da7b3"># that's the only change.</span></pre>
+
+  <h2>Highlights</h2>
+  <div class="grid">
+    <div class="card"><b>Four providers.</b> OpenAI, Anthropic, Google Vertex AI (Gemini + Claude), AWS Bedrock (ConverseStream).</div>
+    <div class="card"><b>SSE-aware.</b> Repairs the reassembled tool-call arguments / JSON content across delta events, not raw bytes.</div>
+    <div class="card"><b>Compression-transparent.</b> Decodes gzip/brotli/deflate, repairs, re-encodes — never buffers the whole body.</div>
+    <div class="card"><b>Holds no keys.</b> Your credential passes through; for Bedrock, SigV4 means the secret never crosses the wire at all.</div>
+  </div>
+
+  <h2>Get it</h2>
+  <pre>cargo install suture-repair    <span style="color:#9da7b3"># installs the `suture` binary</span>
+suture                         <span style="color:#9da7b3"># listens on 127.0.0.1:8787</span></pre>
+  <p>Or use the byte-level repair engine as a library:
+  <code>cargo add suture-repair-core</code>. Written in Rust, dual-licensed MIT / Apache-2.0.</p>
+
+  <footer>
+    <a href="https://github.com/tensorhq/suture-stream-repair">github.com/tensorhq/suture-stream-repair</a> · MIT OR Apache-2.0 · © Tensor LLC
+  </footer>
+</div>
+</body>
+</html>

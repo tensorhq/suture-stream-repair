@@ -30,6 +30,19 @@ retry, no regenerated tokens:
 {"city": "Par"}    // ← valid; the string and object are safely closed
 ```
 
+### Symptoms this fixes
+
+You're in the right place if your LLM app has thrown any of these on a streaming response:
+
+- `json.decoder.JSONDecodeError: Unterminated string starting at: line 1 column …`
+- `json.decoder.JSONDecodeError: Expecting value: line 1 column … (char …)`
+- `serde_json::Error: EOF while parsing a string` / `EOF while parsing an object`
+- `pydantic_core.ValidationError` on a truncated tool-call `arguments`
+- Tool / function-call arguments that won't parse when the model hits `max_tokens`
+- Truncated structured-output / JSON-mode `content` across streamed deltas
+
+…on OpenAI, Anthropic, Google Vertex AI (Gemini / Claude), or AWS Bedrock.
+
 ## Features
 
 - Repairs **OpenAI** (`/v1/chat/completions`), **Anthropic** (`/v1/messages`),
