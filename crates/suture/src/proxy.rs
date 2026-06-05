@@ -363,9 +363,7 @@ async fn proxy(
         let decoded = decode_stream(raw, upstream_enc);
         match collect_io(decoded).await {
             Ok(buf) => {
-                let out: bytes::Bytes = std::str::from_utf8(&buf)
-                    .ok()
-                    .and_then(suture_core::repair_str)
+                let out: bytes::Bytes = suture_core::repair_json_response(&buf)
                     .map(bytes::Bytes::from)
                     .unwrap_or_else(|| bytes::Bytes::from(buf));
                 builder.body(Body::from(out)).unwrap_or_else(|_| {

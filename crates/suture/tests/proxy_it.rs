@@ -449,6 +449,74 @@ async fn bedrock_rejects_non_aws_host() {
     assert_eq!(resp.status(), 403);
 }
 
+async fn mock_nonstream_truncated_json() -> Response {
+    let body = r#"{"content":[{"type":"text","text":"{\"chapters\":[{\"title\":\"Intro"}],"stop_reason":"max_tokens"}"#;
+    Response::builder()
+        .status(200)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn nonstream_nested_json_repaired() {
+    let up = spawn(Router::new().route("/v1/messages", post(mock_nonstream_truncated_json))).await;
+    let cfg = std::sync::Arc::new(Config::from_map(|k| match k {
+        "SUTURE_ANTHROPIC_BASE" => Some(up.clone()),
+        _ => None,
+    }));
+    let proxy_url = spawn(proxy::app(cfg)).await;
+
+    let body = reqwest::Client::new()
+        .post(format!("{proxy_url}/v1/messages"))
+        .header("authorization", "Bearer test")
+        .body(r#"{"stream":false}"#)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let text = v["content"][0]["text"].as_str().unwrap();
+    assert_eq!(text, r#"{"chapters":[{"title":"Intro"}]}"#);
+    serde_json::from_str::<serde_json::Value>(text).expect("nested text must parse");
+}
+
+async fn mock_nonstream_complete_json() -> Response {
+    Response::builder()
+        .status(200)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            r#"{"content":[{"type":"text","text":"done"}],"stop_reason":"end_turn"}"#,
+        ))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn nonstream_complete_json_unchanged() {
+    let up = spawn(Router::new().route("/v1/messages", post(mock_nonstream_complete_json))).await;
+    let cfg = std::sync::Arc::new(Config::from_map(|k| match k {
+        "SUTURE_ANTHROPIC_BASE" => Some(up.clone()),
+        _ => None,
+    }));
+    let proxy_url = spawn(proxy::app(cfg)).await;
+    let body = reqwest::Client::new()
+        .post(format!("{proxy_url}/v1/messages"))
+        .body(r#"{"stream":false}"#)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert_eq!(
+        body, r#"{"content":[{"type":"text","text":"done"}],"stop_reason":"end_turn"}"#,
+        "a complete response is forwarded byte-for-byte"
+    );
+}
+
 #[tokio::test]
 async fn health_returns_ok() {
     let cfg = std::sync::Arc::new(Config::from_map(|_| None));

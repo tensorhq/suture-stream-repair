@@ -1,6 +1,6 @@
 [package]
 name = "suture-repair"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 rust-version = "1.75"
 description = "Ultra-low latency reverse proxy that repairs truncated JSON in LLM streams."
@@ -20,7 +20,7 @@ name = "suture"
 path = "src/main.rs"
 
 [dependencies]
-suture-repair-core = { path = "../suture-core", version = "0.1.0" }
+suture-repair-core = { path = "../suture-core", version = "0.1.0", features = ["serde"] }
 suture-repair-sse = { path = "../suture-sse", version = "0.1.0" }
 axum = "0.7"
 tokio = { version = "1", features = ["full"] }
