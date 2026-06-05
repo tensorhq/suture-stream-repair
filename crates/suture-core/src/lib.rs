@@ -7,6 +7,11 @@ mod repair;
 
 pub use repair::{AppendRepair, Repair, StreamRepairer};
 
+#[cfg(feature = "serde")]
+mod non_streaming;
+#[cfg(feature = "serde")]
+pub use non_streaming::{repair_json_response, repair_value};
+
 /// Repair a complete (possibly truncated) JSON string.
 ///
 /// Returns `Some(valid_json)` when the input is structurally consistent, or
